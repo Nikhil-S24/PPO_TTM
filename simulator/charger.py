@@ -1,101 +1,130 @@
-from vehicle import *
+"""Models for charging infrastructure."""
 
-class Charger:
-
-    def __init__(self, **kwargs):
-        self.queue_size = kwargs.get('queue_size', 0.0)
-        self.ports = kwargs.get('ports', 1)
-        self.charge_rate = kwargs.get('charge_rate', 1)
-        self.status = 'INIT'
-
-    def charge(vehicle):
-        pass
+from typing import Dict, List, Union
 
 
-class ChargingPort:
+from simulator.region import *
+from simulator.vehicle import *
 
-    def __init__(self):
-        self.charge_power = 0.0
-        self.vehicle = None
 
-    def to_dict(self):
-        return {
-            'charge_power': self.charge_power,
-            'vehicle': self.vehicle.to_dict() if self.vehicle else None
-        }
+class ChargePort:
+    """Single port in a charging station.
 
-    def charge(self, vehicle):
-        pass
+    Args:
+        P_max - maximum instantaneous supply power (kW)
+        efficiency - charging efficiency (%)
+    """
 
-class DCFastCharger:
-    
-    def __init__(self, location, ports, queue_size, max_port_power, max_station_power, efficiency):
-        self.ports = [ChargingPort() for port in range(ports)]
-        self.vehicle_queue = []
-        self.rates_queue = []
-        self.stop_cond_queue = []
-        self.vehicles_en_route = []
-        self.max_queue_size = queue_size
-        self.max_port_power = max_port_power
-        self.max_station_power = max_station_power
+    def __init__(self, P_max: float, efficiency: float) -> None:
+        self.P_max = P_max
         self.efficiency = efficiency
-        self.location = location
+        self.vehicle = None
+        self.P_t = 0
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, Union[int, float]]:
+        """Express this object as a dictionary.
+
+        Returns:
+            {
+                P_max: maximum charging power allowed,
+                P_t: current charging power,
+                efficiency: charging efficiency (%),
+                vehicle: vehicle id (None if no vehicle present),
+            }
+        """
         return {
-            'ports': [p.to_dict() for p in self.ports],
-            'vehicle_queue': [v.to_dict() for v in self.vehicle_queue],
-            'vehicles_en_route': [v['vehicle'].to_dict() for v in self.vehicles_en_route],
-            'max_queue_size': self.max_queue_size,
-            'max_port_power': self.max_port_power,
-            'max_station_power': self.max_station_power,
-            'efficiency': self.efficiency,
-            'location': self.location
+            "P_max": self.P_max,
+            "P_t": self.P_t,
+            "efficiency": self.efficiency,
+            "vehicle": self.vehicle,
         }
 
 
-    def assign_vehicle(self, vehicle, charging_rate, end_capacity):
-        assigned = False
-        for port in self.ports:
-            if not port.vehicle:
-                port.vehicle = vehicle
-                port.vehicle.next_charge_rate = charging_rate
-                port.vehicle.end_capacity = end_capacity
-                port.vehicle.status = VehicleStatus.CHARGING
-                assigned = True
-                break
-            elif port.vehicle == vehicle:
-                port.vehicle.next_charge_rate = charging_rate
-                port.vehicle.end_capacity = end_capacity
-                assigned = True
-                break
-        if not assigned and vehicle not in self.vehicle_queue:
-            self.vehicle_queue.append(vehicle)
-            self.rates_queue.append(charging_rate)
-            self.stop_cond_queue.append(end_capacity)
-        if assigned and vehicle in self.vehicle_queue:
-            idx = self.vehicle_queue.index(vehicle)
-            del self.vehicle_queue[idx]
-            del self.rates_queue[idx]
-            del self.stop_cond_queue[idx]
+class ChargeStation:
+    """Charging station.
 
-    def tick(self, delta_t, ambient_t):
-        to_remove = []
-        for idx, v in enumerate(self.vehicles_en_route):
-            if v['vehicle'].location == self.location:
-                self.assign_vehicle(v['vehicle'], v['rate'], v['condition'])
-                to_remove.append(idx)
-        for idx in sorted(to_remove, reverse=True):
-            del self.vehicles_en_route[idx]
-        for idx, v in enumerate(self.vehicle_queue):
-            self.assign_vehicle(self.vehicle_queue[idx], self.rates_queue[idx], self.stop_cond_queue[idx])
+    Args:
+        location: map loacation
+        ports: list of charging ports that comprise the station
+        P_max: maximum power output of the station (kW) (None indicates this
+            is the sum of P_max for all ports)
+        queue_size: maximum number of vehicles that can wait to charge (None
+            means unbounded)
+    """
+
+    def __init__(
+        self, location: Location, ports: List[ChargePort], P_max: float = None
+    ) -> None:
+        self.location = location
+        self.ports = ports
+        self.P_max = P_max
+        self.vehicle_queue = {}
+
+    def to_dict(self) -> Dict[str, Union[Dict, List, int, float]]:
+        """Return representing the current charging station state.
+
+        Returns:
+            {
+                location: charging station location,
+                ports: list of ports and their current state,
+                P_max: maximum power output,
+                vheicle_queue: list of waiting vehiclde ids
+            }
+        """
+        return {
+            "location": self.location.to_dict(),
+            "ports": [p.to_dict() for p in self.ports],
+            "P_max": self.P_max,
+            "vehicle_queue": [vid for vid in self.vehicle_queue],
+        }
+
+    def request_charge(self, preferred_rate: float, vehicle: int) -> None:
+        """
+        A <vehicle> requests a maximum charge rate <preferred rate> in kW.
+        The requested rate may not be provided, but will never be exceeded.
+        """
         for port in self.ports:
-            if port.vehicle:
-                #print(port.vehicle.battery.to_dict())
-                port.vehicle.battery.charge(port.vehicle.next_charge_rate * delta_t.total_seconds() / 3600, delta_t.total_seconds(), ambient_t)
-                if port.vehicle.battery.soc >= port.vehicle.end_capacity:
-                    port.vehicle.status = VehicleStatus.IDLE
-                    port.vehicle = None
-        # TODO: add concept of charging queue
-        #if len(self.vehicle_queue) > self.max_queue_size:
-        #    raise Exception('Too many vehicles in station queue')
+            if port.vehicle == vehicle:
+                port.P_t = min(preferred_rate, port.P_max)
+                return
+        self.vehicle_queue[vehicle] = preferred_rate
+
+    def disconnect(self, vehicle: int) -> None:
+        """
+        Disconnect <vehicle> from this charging station.
+        """
+        for port in self.ports:
+            if port.vehicle == vehicle:
+                port.vehicle = None
+                port.P_t = 0
+                return
+        if vehicle in self.vehicle_queue:
+            del self.vehicle_queue[vehicle]
+
+    def tick(self, fleet: List, dt: float, T_a: float) -> None:
+        """
+        Update the state of all vehicles currently charging.
+
+        Args:
+            fleet: global list of vehicles.
+            dt: the tick length across which to recalculate state.
+            T_a: the ambient temperature of the charging station on the tick
+                interval.
+        """
+        to_charge = list(self.vehicle_queue.keys())
+        power_requested = 0.0
+        for port in self.ports:
+            if port.vehicle is None and len(to_charge) > 0:
+                vehicle = to_charge.pop()
+                port.vehicle = vehicle
+                port.P_t = min(self.vehicle_queue[vehicle], port.P_max)
+                del self.vehicle_queue[vehicle]
+            if port.vehicle is not None:
+                if power_requested + port.P_t <= self.P_max:
+                    power_requested += port.P_t
+                else:
+                    port.P_t = max(0.0, self.P_max - power_requested)
+                    power_requested += port.P_t
+        for port in self.ports:
+            if port.vehicle is not None:
+                fleet[port.vehicle].battery.charge(port.P_t, dt, T_a)

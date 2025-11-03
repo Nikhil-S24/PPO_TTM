@@ -1,3 +1,5 @@
+"""Taxi fleet simulator."""
+from typing import Dict, Tuple
 from enum import Enum
 
 
@@ -8,256 +10,236 @@ import logging
 import pickle
 import random
 
-import coloredlogs
+
+import gymnasium as gym
 import numpy
 import yaml
-import zmq
+
 
 from scipy import stats
 
-from job import *
-from vehicle import *
-from charger import *
-from demand import *
 
-
-LOGGER = logging.getLogger('Charge Simulator')
+from simulator.job import *
+from simulator.charger import *
+from simulator.demand import *
+from simulator.region import *
+from simulator.vehicle import *
 
 
 random.seed(0)
 numpy.random.seed(0)
 
 
-class SimulationStatus(Enum):
-    INITIALIZING = 1
-    CALCULATING = 2
-    WAITING = 3
-    STOPPED = 4
+class TaxiFleetSimulator(gym.Env):
+    """Taxi fleet simulator.
 
+    Args:
+        seed: seed value for random number generator
+        config: configuration dictionary, (see config.yaml for details.)
+    """
 
-class Simulation:
+    def __init__(self, config: Dict) -> None:
+        super().__init__()
+        self.config = config
 
-    def __init__(self, config, port=6969, logfile=None):
-        self.status = SimulationStatus.INITIALIZING
+    def _get_obs(self) -> numpy.array:
+        """Get an observation from the environment."""
+        obs = numpy.zeros((len(self.fleet), 2))
+        for idx, v in enumerate(self.fleet):
+            obs[idx, 0] = v.battery.actual_capacity / v.battery.initial_capacity
+            obs[idx, 1] = v.battery.soc
+        return obs
+
+    def reset(self, seed: int = None) -> Tuple[numpy.array, Dict]:
+        """Start a new episode.
+
+        Args:
+            seed: Random seed for reproducible episodes
+
+        Returns:
+            tuple: (obeservation, info) for initial state
+        """
+        super().reset(seed=seed)
 
         # Initialize Time
-        self.max_steps = config['max steps']
-        self.delta_t = datetime.timedelta(seconds=config['delta t'])
-        self.t = datetime.datetime.strptime(config['start t'], '%m/%d/%Y %I:%M:%S %p')
-        self.end_t = datetime.datetime.strptime(config['end t'], '%m/%d/%Y %I:%M:%S %p')
-        self.ambient_t = 25 #TODO Weather model
+        self.dt = float(self.config['delta t'])
+        self.t = datetime.datetime.strptime(self.config['start t'], '%Y/%m/%d %H:%M:%S')
+        self.t_max = datetime.datetime.strptime(self.config['end t'], '%Y/%m/%d %H:%M:%S')
+        self.T_a = 25 #TODO Weather model
 
         # Load Map
-        if config['city']['name'] == 'New York' and config['city']['granularity'] == 'district':
-            with open('../data/nyc-district-map2.pkl', 'rb') as pklfile:
-                self.map = pickle.loads(pklfile.read())
+        self.region = CyclicZoneGraph(self.config['city']) 
 
         # Load Demand
-        self.demand = ReplayDemand(f'../data/{config["demand"]}')
-        self.arrived = self.demand.get_demand(self.t, self.t + self.delta_t)
-        self.inprogress = {}
-        self.rejected = {}
-        self.completed = {}
+        self.demand = ReplayDemand(self.config['demand'], self.region)
+        self.demand.seek(self.t)
+        self.arrived = self.demand.tick(self.dt)
+        self.assigned = set()
+        self.inprogress = set()
+        self.rejected = 0
+        self.completed = 0
+        self.failed = 0
 
         # Initialize Fleet
         self.fleet = []
-        for vehicle in range(config['fleet']['size']):
+        for vehicle in range(self.config['fleet']['size']):
             self.fleet.append(Vehicle(
-                model=config['fleet']['vehicle'],
-                battery=config['fleet']['battery model'],
-                location=random.choice(list(self.map.keys()))
+                model=self.config['fleet']['vehicle'],
+                battery=self.config['fleet']['battery model'],
+                location=CyclicZoneGraphLocation(random.choice(list(self.region.map.keys())), self.region),
+                vid=vehicle
             ))
 
         # Initialize Charging Network
         self.charging_network = []
-        for station in config['charging stations']:
-            self.charging_network.append(DCFastCharger(
-                location = station['location'],
-                ports = station['ports'],
-                queue_size = station['queue size'],
-                max_port_power = station['max port power'],
-                max_station_power = station['max station power'],
-                efficiency = station['efficiency']
+        for station in self.config['charging stations']:
+            self.charging_network.append(ChargeStation(
+                location = CyclicZoneGraphLocation(station['location'], self.region),
+                ports = [ChargePort(station['max port power'], station['efficiency']) for port in range(station['ports'])],
+                P_max = station['max total power'],
             ))
 
-        # Initialize Network
-        self.port = port
+        # Initialize State and Action Spaces
+        self.observation_space = gym.spaces.Box(0,1, shape=(len(self.fleet), 2))
+        self.action_space = gym.spaces.Box(0,1, shape=(len(self.fleet), 2))
+        self.step_count = 0
 
-        LOGGER.info('Simulator initialized...')
+        # Global state information
+        info = {}
+        info['arrived'] = [j.to_dict() for j in self.arrived]
+        info['assigned'] = [j.to_dict() for j in self.assigned]
+        info['completed'] = self.completed
+        info['rejected'] = self.rejected
+        info['inprogress'] = [j.to_dict() for j in self.inprogress]
+        info['failed'] = self.failed
+        info['charging_network'] = [s.to_dict() for s in self.charging_network]
+        info['fleet'] = [v.to_dict() for v in self.fleet]
 
-    def start(self):
-        context = zmq.Context()
-        socket = context.socket(zmq.REP)
-        socket.bind("tcp://*:%s" % self.port)
-        LOGGER.info('Simulator serving world state on tcp://*:%s' % self.port)
-        while self.status != SimulationStatus.STOPPED:
-            self.status = SimulationStatus.WAITING
-            LOGGER.debug('waiting...')
-            request = json.loads(socket.recv())
-            LOGGER.debug('received request.')
-            self.status = SimulationStatus.CALCULATING
+        return self._get_obs(), info
 
-            violation_list = []
+    def get_closest_charger(self, vehicle: Vehicle) -> ChargeStation:
+        """
+        Get the closest charger to a <vehicle>.
+        """
+        distances = []
+        for charger in self.charging_network:
+            d, t = vehicle.location.to(charger.location)
+            distances.append(d)
+        return self.charging_network[distances.index(min(distances))]
 
-            # Move Fleet
-            for veh_idx, action in enumerate(request['actions']):
-                if action['command'] == 'service':
-                    if action['jobid'] not in self.arrived:
-                        raise Exception(f'{action["jobid"]} not in pending job list')
-                    ttp, dtp = self.get_td_to_dest(self.fleet[veh_idx].location, self.arrived[action['jobid']].start_loc)
-                    self.arrived[action['jobid']].assign_vehicle(self.fleet[veh_idx], ttp, dtp)
-                    self.inprogress[action['jobid']] = self.arrived[action['jobid']]
-                    del self.arrived[action['jobid']]
-                elif action['command'] == 'charge':
-                    if self.fleet[veh_idx].location != self.charging_network[action['stationidx']].location:
-                        self.fleet[veh_idx].status = VehicleStatus.TOLOC
-                        self.fleet[veh_idx].destination = self.charging_network[action['stationidx']].location
-                        ttp, dtp = self.get_td_to_dest(self.fleet[veh_idx].location, self.charging_network[action['stationidx']].location)
-                        self.fleet[veh_idx].distance_remaining = dtp
-                        self.fleet[veh_idx].time_remaining = ttp
-                        self.charging_network[action['stationidx']].vehicles_en_route.append({'vehicle': vehicle, 'rate': action['rate'], 'condition': action['stop condition']})
-                    else:
-                        self.charging_network[action['stationidx']].assign_vehicle(self.fleet[veh_idx], action['rate'], action['stop condition'])
-                elif action['command'] == 'reposition':
-                    if self.fleet[veh_idx].status != VehicleStatus.IDLE:
-                        raise Exception(f'Vehicle {veh_idx} is not idle')
-                    else:
-                        self.fleet[veh_idx].status = VehicleStatus.TOLOC
-                        self.fleet[veh_idx].destination = action['destination']
-                        ttp, dtp = self.get_td_to_dest(self.fleet[veh_idx].location, action['destination'])
-                        self.fleet[veh_idx].distance_remaining = dtp
-                        self.fleet[veh_idx].time_remaining = ttp
+    def get_closest_job(self, vehicle: Vehicle) -> Job:
+        """
+        Get the closest job to <vehicle> that is not inprogress or expired.
+        """
+        closest_job = None
+        distance = float('inf')
+        for job in self.arrived:
+            d, t = vehicle.location.to(job.pickup_location)
+            #if d == float('inf'):
+            #    print(job.pickup_location.region.map[1])
+            if d < distance:
+                distance = d
+                closest_job = job
+        return closest_job
 
-            #LOGGER.critical(self.fleet[7].to_dict())
+    def step(self, action: numpy.array) -> Tuple[numpy.array, float, bool, bool, Dict]:
+        """Execute one timestep within the environment.
 
-            # Update charging vehicles
-            for charger in self.charging_network:
-                charger.tick(self.delta_t, self.ambient_t)
+        Args:
+            action: The action to take
+        
+        Returns:
+            tuple: (observation, reward, terminated, truncated, info)
+        """
 
-            # Update vehicles on jobs
-            del_keys = []
-            for key, job in self.inprogress.items():
-                job.tick(self.delta_t, self.ambient_t)
-                if job.status == JobStatus.COMPLETE:
-                    self.completed[key] = job
-                    del_keys.append(key)
-                #elif job.status == JobStatus.REJECTED:
-                #    self.rejected[key] = job
-                #    del_keys.append(key)
-            for key in del_keys:
-                del self.inprogress[key]
+        # First update vehicle statuses
+        for idx in range(len(self.fleet)):
+            if action[idx,0] > 0.5 and self.fleet[idx].status in [VehicleStatus.IDLE, VehicleStatus.CHARGING, VehicleStatus.TOCHARGE]:
+                self.fleet[idx].charge(self.get_closest_charger(self.fleet[idx]), action[idx,1])
+            elif len(self.arrived) > 0 and self.fleet[idx].status in [VehicleStatus.IDLE, VehicleStatus.CHARGING, VehicleStatus.TOCHARGE]:
+                self.fleet[idx].service_demand(self.get_closest_job(self.fleet[idx]))
 
-            # Update moving vehicles
-            for vehicle in self.fleet:
-                if vehicle.status == VehicleStatus.TOLOC:
-                    vehicle.tick(self.delta_t, self.ambient_t)
+        # Update fleet
+        for vehicle in self.fleet:
+            vehicle.tick(self.dt, {'T_a': self.T_a}) # TODO: Check conditions
 
-            # Get new arrivals Job status
-            self.arrived = self.arrived | self.demand.get_demand(self.t, self.t + self.delta_t)
-            del_keys = []
-            for job in self.arrived:
-                self.arrived[job].tick(self.delta_t, self.ambient_t)
-                if self.arrived[job].status == JobStatus.COMPLETE:
-                    self.completed[job] = self.arrived[job]
-                    del_keys.append(job)
-                if self.arrived[job].status == JobStatus.REJECTED:
-                    self.rejected[job] = self.arrived[job]
-                    del_keys.append(job)
-            for key in del_keys:
-                del self.arrived[key]
+        # Update charging vehicles
+        for charger in self.charging_network:
+            charger.tick(self.fleet, self.dt, self.T_a)
 
-            #LOGGER.error(len(self.completed))
-            #LOGGER.critical(len(self.rejected))
-            #LOGGER.info(len(self.inprogress))
-            LOGGER.warning(self.t)
-            # Update time
-            self.t = self.t + self.delta_t
+        # Get new arrivals
+        self.arrived = self.arrived | self.demand.tick(self.dt)
 
-            # Calculate response
-            response = {}
-            response['arrived'] = [self.arrived[j].to_dict() for j in self.arrived]
-            response['completed'] = len(self.completed)
-            response['rejected'] = len(self.rejected)
-            response['inprogress'] = [self.inprogress[j].to_dict() for j in self.inprogress]
-            response['charging_network'] = [s.to_dict() for s in self.charging_network]
-            response['fleet'] = [v.to_dict() for v in self.fleet]
-            response['violations'] = violation_list
-            #print(response)
-            socket.send_string(json.dumps(response))
-            LOGGER.debug('response sent.')
-            
-            if self.t >= self.end_t:
-                self.status = SimulationStatus.STOPPED
-                LOGGER.warning('Simulation reached its end...')
-                break
+        # Update jobs in progress
+        to_completed = set()
+        to_failed = set()
+        for job in self.inprogress:
+            if job.status == JobStatus.COMPLETE:
+                to_completed = to_completed.union({job})
+            elif job.status == JobStatus.FAILED:
+                to_failed = to_failed.union({job})
+        self.inprogress = self.inprogress - to_completed - to_failed
+        self.completed += len(to_completed)
+        self.failed += len(to_failed)
 
-    def get_td_to_dest(self, loc, dest):
-        if self.map[loc][dest]['time'] is None:
-            return dijkstra(loc, dest)            
-        elif isinstance(self.map[loc][dest]['time'], float):
-            return self.map[loc][dest]['time'], self.map[loc][dest]['distance']
-        else:
-            t = self.map[loc][dest]['time'].resample(1)
-            d = self.map[loc][dest]['distance'].resample(1)
-            if t < 0 or d < 0:
-                return 0.0, 0.0
-            else:
-                return t, d
+        # Update assigned jobs
+        to_inprogress = set()
+        to_failed = set()
+        for job in self.assigned:
+            if job.status == JobStatus.INPROGRESS:
+                to_inprogress = to_inprogress.union({job})
+            elif job.status == JobStatus.FAILED:
+                to_failed = to_failed.union({job})
+        self.assigned = self.assigned - to_inprogress - to_failed
+        self.failed += len(to_failed)
+        self.inprogress = self.inprogress.union(to_inprogress)
 
+        # Update arrived jobs
+        to_assigned = set()
+        to_rejected = set()
+        for job in self.arrived:
+            job.tick(self.dt)
+            if job.status == JobStatus.ASSIGNED:
+                to_assigned = to_assigned.union({job})
+            elif job.status == JobStatus.REJECTED:
+                to_rejected = to_rejected.union({job})
+            elif job.status == JobStatus.INPROGRESS:
+                to_inprogress = to_inprogress.union({job})
+        self.arrived = self.arrived - to_assigned - to_rejected - to_inprogress
+        self.assigned = self.assigned.union(to_assigned)
+        self.inprogress = self.inprogress.union(to_inprogress)
+        self.rejected += len(to_rejected)
 
-    def dijkstra(self, loc, dest):
-        dist = []
-        prev = []
-        Q = set()
-        for v in self.map:
-            dist.append(float('inf'))
-            prev.append(None)
-            Q.add(v)
-        dist[loc] = 0
+        # Update time
+        self.t = self.t + datetime.timedelta(seconds=self.dt)
+        self.step_count += 1
+        
+        print(self.t)
 
-        while len(Q) > 0:
-            u = dist.index(min(dist))
-            Q.remove(u)
+        # Calculate info
+        info = {}
+        info['arrived'] = [j.to_dict() for j in self.arrived]
+        info['assigned'] = [j.to_dict() for j in self.assigned]
+        info['completed'] = self.completed
+        info['rejected'] = self.rejected
+        info['inprogress'] = [j.to_dict() for j in self.inprogress]
+        info['failed'] = self.failed
+        info['charging_network'] = [s.to_dict() for s in self.charging_network]
+        info['fleet'] = [v.to_dict() for v in self.fleet]
+        
+        # Calculate reward
+        # TODO: specify as lambda
+        ALPHA = 1.0
+        BETA = 1.0
+        #reward = sum([v.battery.soc for v in self.fleet]) + LAMBDA * sum([v.battery.actual_capacity / v.battery.initial_capacity for v in self.fleet])
+        reward = self.completed + ALPHA * sum([v.battery.actual_capacity / v.battery.initial_capacity for v in self.fleet]) # - BETA * sum([1 if v.status == VehicleStatus.RECOVERY else - for v in self.fleet])
 
-            for v in Q:
-                if self.map[u][v]['distance'] is not None:
-                    dv = self.map[u][v]['distance'] if isinstance(self.map[u][v]['distance'], float) else max(self.map[u][v]['distance'].resample(1), 0)
-                    alt = dist[u] + dv
-                    if alt < dist[v]:
-                        dist[v] = alt
-                        prev[v] = u
-
-        S = []
-        u = dest
-        t = 0
-        if prev[u] is not None or u == loc:
-            while u is not None:
-                t += self.map[prev[u]][u]['time'] if isinstance(self.map[prev[u]][u]['time'], float) else max(self.map[prev[u]][u]['time'].resample(1), 0)
-                S.append(u)
-                u = prev[u]
-
-        return t, dist[u]
+        return (
+            self._get_obs(),
+            reward,
+            True if self.t >= self.t_max else False,
+            True if self.step_count > 1000 else False,
+            info
+        )
 
 
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Simulate vehicle fleet')
-    parser.add_argument('-c', '--config', help='Path to configuration file for a simulation')
-    parser.add_argument('-v', '--verbosity', help='Logging level')
-    parser.add_argument('-o', '--output', help='Path to state output log')
-    parser.add_argument('-p', '--port', help='Port for scheduler to listen to', type=int)
-    parser.add_argument('-n', '--max_steps', help='Maximum number of steps for the simulation', type=int)
-    parser.add_argument('-d', '--delta_t', help='Time delta per step', type=int)
-    args = parser.parse_args()
-    coloredlogs.install(level=args.verbosity.upper())
-
-    config = {}
-    with open(args.config, 'r') as fp:
-        config = yaml.safe_load(fp.read())
-    if args.max_steps is not None:
-        config['max steps'] = args.max_steps
-    if args.delta_t is not None:
-        config['delta t'] = args.delta_t
-
-    simulation = Simulation(config, port=args.port, logfile=args.output)
-    simulation.start()
