@@ -209,3 +209,23 @@ __marimo__/
 # PyTorch Artifacts
 .pt
 .pts
+
+
+# Model files
+*.pt
+*.pth
+*.ckpt
+
+# CSV outputs
+*.csv
+
+# Logs
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
