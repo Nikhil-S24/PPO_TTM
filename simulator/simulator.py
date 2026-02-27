@@ -33,7 +33,7 @@ class TaxiFleetSimulator(gym.Env):
         # =========================
         # MANUAL TTM TOGGLE
         # =========================
-        self.use_ttm = True   # Change to False for baseline
+        self.use_ttm = False   # Change to False for baseline
 
         if self.use_ttm:
             self.ttm = ZeroShotTTM(
@@ -56,16 +56,20 @@ class TaxiFleetSimulator(gym.Env):
             )
 
             predicted_soh = self.predicted_soh.get(v.vid)
-            if predicted_soh is None:
-                predicted_soh = current_soh
 
-            avg_soh = 0.5 * (current_soh + predicted_soh)
+            if predicted_soh is None:
+                pred_scalar = current_soh
+            elif isinstance(predicted_soh, np.ndarray):
+                pred_scalar = np.mean(predicted_soh)
+            else:
+                pred_scalar = predicted_soh
+
+            avg_soh = 0.5 * (current_soh + pred_scalar)
 
             obs[idx, 0] = avg_soh
             obs[idx, 1] = v.battery.soc
 
         return obs
-
     # ==================================================
     # RESET
     # ==================================================
@@ -98,6 +102,7 @@ class TaxiFleetSimulator(gym.Env):
         self.completed = 0
         self.rejected = 0
         self.failed = 0
+        self.total_revenue=0
 
         # -------------------------------
         # Fleet
@@ -162,6 +167,7 @@ class TaxiFleetSimulator(gym.Env):
             "rejected": self.rejected,
             "inprogress": [],
             "failed": self.failed,
+            "total_revenue": self.total_revenue,
             "charging_network": [
                 s.to_dict() for s in self.charging_network
             ],
@@ -209,7 +215,13 @@ class TaxiFleetSimulator(gym.Env):
         # -------------------------------
         for v in self.fleet:
             v.tick(self.dt, {"T_a": self.T_a})
-
+        # Count completed jobs safely
+        for v in self.fleet:
+            if hasattr(v, "job") and v.job is not None:
+                if v.job.status.name == "COMPLETE":
+                    self.completed += 1
+                    self.total_revenue += v.job.fare
+                    v.job.counted=True
         for c in self.charging_network:
             c.tick(self.fleet, self.dt, self.T_a)
 
@@ -224,31 +236,25 @@ class TaxiFleetSimulator(gym.Env):
                 self.soh_history[v.vid].pop(0)
 
         # -------------------------------
+        # Zero-Shot Prediction
         # -------------------------------
-        # Zero-Shot Prediction (Optimized)
-        # -------------------------------
-
-        
         for v in self.fleet:
             history = self.soh_history[v.vid]
 
-            # Baseline mode (TTM disabled)
             if not self.use_ttm:
                 self.predicted_soh[v.vid] = history[-1]
                 continue
 
-            # Not enough history
             if len(history) < 512:
                 self.predicted_soh[v.vid] = history[-1]
                 continue
 
-            # Run TTM only every N steps
             if self.step_count % self.ttm_update_interval == 0:
                 self.predicted_soh[v.vid] = self.ttm.predict(history)
 
-            # Otherwise reuse previous prediction
             elif self.predicted_soh[v.vid] is None:
                 self.predicted_soh[v.vid] = history[-1]
+
         # -------------------------------
         # Demand Update
         # -------------------------------
@@ -260,21 +266,33 @@ class TaxiFleetSimulator(gym.Env):
         self.t += datetime.timedelta(seconds=self.dt)
         self.step_count += 1
 
+        if self.step_count % 200 == 0:
+            print("Step count:", self.step_count)
+
         # ==================================================
-        # TTM-AWARE REWARD
+        # TTM-AWARE REWARD (FIXED)
         # ==================================================
         ALPHA = 1.0
         BETA = 2.0
 
+        # Current SoH reward
         current_soh_reward = sum(
             v.battery.actual_capacity / v.battery.initial_capacity
             for v in self.fleet
         )
 
-        future_penalty = sum(
-            max(0.0, 1.0 - self.predicted_soh[v.vid])
-            for v in self.fleet
-        )
+        # Future degradation penalty (convert forecast to scalar)
+        future_penalty = 0.0
+
+        for v in self.fleet:
+            forecast = self.predicted_soh[v.vid]
+
+            if isinstance(forecast, np.ndarray):
+                pred_mean = np.mean(forecast)
+            else:
+                pred_mean = forecast
+
+            future_penalty += max(0.0, 1.0 - pred_mean)
 
         reward = (
             self.completed
@@ -282,6 +300,9 @@ class TaxiFleetSimulator(gym.Env):
             - BETA * future_penalty
         )
 
+        # -------------------------------
+        # Info Dictionary
+        # -------------------------------
         info = {
             "arrived": [j.to_dict() for j in self.arrived],
             "assigned": [j.to_dict() for j in self.assigned],
@@ -289,6 +310,7 @@ class TaxiFleetSimulator(gym.Env):
             "rejected": self.rejected,
             "inprogress": [j.to_dict() for j in self.inprogress],
             "failed": self.failed,
+            "total_revenue": self.total_revenue,
             "charging_network": [
                 s.to_dict() for s in self.charging_network
             ],

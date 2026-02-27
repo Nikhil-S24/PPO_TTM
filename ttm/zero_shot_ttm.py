@@ -2,6 +2,8 @@
 Zero-Shot Granite TTM for EV SoH Forecasting
 Improved version returning full forecast horizon
 """
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 import tempfile
 import numpy as np
@@ -66,6 +68,7 @@ class ZeroShotTTM:
                 seed=SEED,
                 report_to="none",
                 disable_tqdm=True,
+                dataloader_pin_memory=False,
             ),
         )
 
@@ -114,6 +117,15 @@ class ZeroShotTTM:
 
         # Shape: [batch, horizon, channels]
         predicted_future = forecast[0, :, 0]
+        
+                
+        current_soh = soh_history[-1]
+
+        # 1️⃣ Prevent SoH increase
+        predicted_future = np.minimum(predicted_future, current_soh)
+
+        # 2️⃣ Enforce monotonic decrease
+        predicted_future = np.minimum.accumulate(predicted_future)
 
         return predicted_future  # ← FULL 96-step forecast
 

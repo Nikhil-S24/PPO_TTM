@@ -1,35 +1,22 @@
 import pandas as pd
-import numpy as np
 
-def compute_metrics(csv_path):
-    df = pd.read_csv(csv_path)
+def analyze(file):
+    df = pd.read_csv(file)
+    df = df.apply(pd.to_numeric, errors="coerce")
+    
+    total_profit = df["total_revenue"].iloc[-1]
+    total_power = df["total_power"].sum()
+    total_completed = df["completed"].iloc[-1]
 
-    metrics = {}
-
-    # Number of timesteps
-    metrics["timesteps"] = len(df)
-
-    # Cumulative profit
-    metrics["cumulative_profit"] = df["profit"].sum()
-
-    # Peak charging power
-    metrics["peak_power"] = df["total_power"].max()
-
-    # Final average SoH
     soh_cols = [col for col in df.columns if col.startswith("soh")]
     final_avg_soh = df[soh_cols].iloc[-1].mean()
-    metrics["final_avg_soh"] = final_avg_soh
 
-    return metrics
+    print(f"\nResults for {file}")
+    print(f"Total Profit: {total_profit:.2f}")
+    print(f"Total Power Used: {total_power:.2f}")
+    print(f"Total Completed Jobs: {total_completed}")
+    print(f"Final Average SoH: {final_avg_soh:.4f}")
 
-
-baseline_metrics = compute_metrics("output_baseline.csv")
-ttm_metrics = compute_metrics("output_ttm.csv")
-
-print("\n=== BASELINE METRICS ===")
-for k, v in baseline_metrics.items():
-    print(f"{k}: {v}")
-
-print("\n=== TTM METRICS ===")
-for k, v in ttm_metrics.items():
-    print(f"{k}: {v}")
+analyze("baseline.csv")
+analyze("ppo.csv")
+analyze("ppo_ttm.csv")

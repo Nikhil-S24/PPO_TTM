@@ -17,6 +17,7 @@ import coloredlogs
 import gymnasium as gym
 import numpy
 import yaml
+import numpy as np
 
 from scipy import stats
 
@@ -152,7 +153,12 @@ class DnnPolicy(SchedulePolicy):
         with torch.no_grad():
             x = torch.from_numpy(observation).unsqueeze(0)
             action = self.dnn(x)[0].squeeze().cpu().numpy()
-            action[:, 1] = action[:, 1] * 10.0
+            
+            # Clip charging decision between 0 and 1
+            action[:, 0] = np.clip(action[:, 0], 0.0, 1.0)
+
+            # Clip charging power between 0 and 72.1 kW
+            action[:, 1] = np.clip(action[:, 1] * 10.0, 0.0, 72.1)
             return action
 
 
@@ -164,6 +170,10 @@ class DataLogger:
 
     def __init__(self, logfile):
         self.csvfile = open(logfile, "w")
+        header = "total_revenue,total_power,completed,"
+        header += ",".join([f"soh_{i}" for i in range(50)]) + ","
+        header += ",".join([f"state_{i}" for i in range(50)])
+        self.csvfile.write(header + "\n")
         self.csvfile.write("profit,total_power,completed,")
         self.csvfile.write(",".join([f"soh{i}" for i in range(50)]))
         self.csvfile.write(",")
@@ -193,12 +203,11 @@ class DataLogger:
 
         self.p_old = p_curr
 
-        profit = 0
-        for j in info["inprogress"]:
-            if self.retired[j["vehicle"]] < 1:
-                profit += j["fare"]
+        profit = info["total_revenue"]
 
-        entry = f"{profit},{total_power},"
+        completed = info["completed"]
+        entry = f"{profit},{total_power},{completed},"
+
         for i in range(50):
             entry += f"{soh_curr[i]},"
         entry += ",".join([f"{state[i]}" for i in range(50)])

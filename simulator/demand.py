@@ -22,7 +22,10 @@ class Demand:
 
 
 class ReplayDemand(Demand):
-    """ReplayDemand replays jobs from a CSV file safely."""
+    """
+    ReplayDemand replays jobs from a CSV file once.
+    No looping.
+    """
 
     def __init__(self, path: str, region, loop: bool = False) -> None:
         super().__init__()
@@ -31,7 +34,6 @@ class ReplayDemand(Demand):
         self.csvfile = open(path, "r")
         self.reader = csv.DictReader(self.csvfile)
 
-        # Read first row safely
         try:
             self.last = next(self.reader)
         except StopIteration:
@@ -49,17 +51,21 @@ class ReplayDemand(Demand):
         self.global_idx = 0
         self.region = region
         self.loop = loop
+        self.exhausted = False   # 🔥 NEW
 
     def seek(self, t: datetime.datetime) -> None:
-        """Move demand pointer to time t safely."""
         if self.t is None:
             return
 
         if t <= self.t_min:
             self.csvfile.seek(0)
             self.reader = csv.DictReader(self.csvfile)
-            self.last = next(self.reader)
-            self.t = self.t_min
+            try:
+                self.last = next(self.reader)
+                self.t = self.t_min
+            except StopIteration:
+                self.last = None
+                self.exhausted = True
             return
 
         while True:
@@ -71,18 +77,18 @@ class ReplayDemand(Demand):
                     self.last["pickup_time"], self.datefmt
                 )
             except StopIteration:
+                self.exhausted = True
                 return
 
     def tick(self, dt: float, conditions: Dict = None) -> Set:
-        """Return jobs released in [t, t + dt)."""
         jobs = set()
 
-        if self.t is None:
+        if self.exhausted or self.t is None:
             return jobs
 
         end = self.t + datetime.timedelta(seconds=dt)
 
-        while True:
+        while not self.exhausted:
             try:
                 if self.t >= end:
                     break
@@ -98,7 +104,8 @@ class ReplayDemand(Demand):
                 )
 
             except StopIteration:
-                # End of CSV → stop generating demand
+                self.exhausted = True
+                self.csvfile.close()
                 break
 
         return jobs

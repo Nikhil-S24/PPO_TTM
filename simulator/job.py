@@ -56,6 +56,7 @@ class Job:
         self.vehicle = None
         self.status = JobStatus.ARRIVED
         self.elapsed_time = 0
+        self.counted= False
 
     def to_dict(self) -> Dict[str, Union[Dict, float, int, str]]:
         """
