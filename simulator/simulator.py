@@ -1,23 +1,11 @@
-"""Taxi fleet simulator."""
+"""Taxi fleet simulator with Zero-Shot Granite TTM integration."""
+
 from typing import Dict, Tuple
-from enum import Enum
-
-
-import argparse
 import datetime
-import json
-import logging
-import pickle
 import random
 
-
 import gymnasium as gym
-import numpy
-import yaml
-
-
-from scipy import stats
-
+import numpy as np
 
 from simulator.job import *
 from simulator.charger import *
@@ -25,221 +13,292 @@ from simulator.demand import *
 from simulator.region import *
 from simulator.vehicle import *
 
+# 🔹 Granite Zero-shot TTM
+from ttm.zero_shot_ttm import ZeroShotTTM
 
 random.seed(0)
-numpy.random.seed(0)
+np.random.seed(0)
 
 
 class TaxiFleetSimulator(gym.Env):
-    """Taxi fleet simulator.
-
-    Args:
-        seed: seed value for random number generator
-        config: configuration dictionary, (see config.yaml for details.)
-    """
+    """Taxi fleet simulator with TTM-enhanced RL."""
 
     def __init__(self, config: Dict) -> None:
         super().__init__()
         self.config = config
 
-    def _get_obs(self) -> numpy.array:
-        """Get an observation from the environment."""
-        obs = numpy.zeros((len(self.fleet), 2))
+        # ==================================================
+        # LOAD TTM ONLY ONCE (CRITICAL FIX)
+        # ==================================================
+        # =========================
+        # MANUAL TTM TOGGLE
+        # =========================
+        self.use_ttm = True   # Change to False for baseline
+
+        if self.use_ttm:
+            self.ttm = ZeroShotTTM(
+                context_length=512,
+                prediction_length=96,
+            )
+        else:
+            self.ttm = None
+
+        self.ttm_update_interval = 50
+    # ==================================================
+    # TTM-ENHANCED OBSERVATION
+    # ==================================================
+    def _get_obs(self) -> np.ndarray:
+        obs = np.zeros((len(self.fleet), 2))
+
         for idx, v in enumerate(self.fleet):
-            obs[idx, 0] = v.battery.actual_capacity / v.battery.initial_capacity
+            current_soh = (
+                v.battery.actual_capacity / v.battery.initial_capacity
+            )
+
+            predicted_soh = self.predicted_soh.get(v.vid)
+            if predicted_soh is None:
+                predicted_soh = current_soh
+
+            avg_soh = 0.5 * (current_soh + predicted_soh)
+
+            obs[idx, 0] = avg_soh
             obs[idx, 1] = v.battery.soc
+
         return obs
 
-    def reset(self, seed: int = None) -> Tuple[numpy.array, Dict]:
-        """Start a new episode.
-
-        Args:
-            seed: Random seed for reproducible episodes
-
-        Returns:
-            tuple: (obeservation, info) for initial state
-        """
+    # ==================================================
+    # RESET
+    # ==================================================
+    def reset(self, seed: int = None) -> Tuple[np.ndarray, Dict]:
         super().reset(seed=seed)
 
-        # Initialize Time
-        self.dt = float(self.config['delta t'])
-        self.t = datetime.datetime.strptime(self.config['start t'], '%Y/%m/%d %H:%M:%S')
-        self.t_max = datetime.datetime.strptime(self.config['end t'], '%Y/%m/%d %H:%M:%S')
-        self.T_a = 25 #TODO Weather model
+        # -------------------------------
+        # Time
+        # -------------------------------
+        self.dt = float(self.config["delta t"])
+        self.t = datetime.datetime.strptime(
+            self.config["start t"], "%Y/%m/%d %H:%M:%S"
+        )
+        self.t_max = datetime.datetime.strptime(
+            self.config["end t"], "%Y/%m/%d %H:%M:%S"
+        )
+        self.T_a = 25
 
-        # Load Map
-        self.region = CyclicZoneGraph(self.config['city']) 
+        # -------------------------------
+        # Map & Demand
+        # -------------------------------
+        self.region = CyclicZoneGraph(self.config["city"])
 
-        # Load Demand
-        self.demand = ReplayDemand(self.config['demand'], self.region)
+        self.demand = ReplayDemand(self.config["demand"], self.region)
         self.demand.seek(self.t)
         self.arrived = self.demand.tick(self.dt)
+
         self.assigned = set()
         self.inprogress = set()
-        self.rejected = 0
         self.completed = 0
+        self.rejected = 0
         self.failed = 0
 
-        # Initialize Fleet
+        # -------------------------------
+        # Fleet
+        # -------------------------------
         self.fleet = []
-        for vehicle in range(self.config['fleet']['size']):
-            self.fleet.append(Vehicle(
-                model=self.config['fleet']['vehicle'],
-                battery=self.config['fleet']['battery model'],
-                location=CyclicZoneGraphLocation(random.choice(list(self.region.map.keys())), self.region),
-                vid=vehicle
-            ))
+        for vid in range(self.config["fleet"]["size"]):
+            self.fleet.append(
+                Vehicle(
+                    model=self.config["fleet"]["vehicle"],
+                    battery=self.config["fleet"]["battery model"],
+                    location=CyclicZoneGraphLocation(
+                        random.choice(list(self.region.map.keys())),
+                        self.region,
+                    ),
+                    vid=vid,
+                )
+            )
 
-        # Initialize Charging Network
+        # -------------------------------
+        # Charging Network
+        # -------------------------------
         self.charging_network = []
-        for station in self.config['charging stations']:
-            self.charging_network.append(ChargeStation(
-                location = CyclicZoneGraphLocation(station['location'], self.region),
-                ports = [ChargePort(station['max port power'], station['efficiency']) for port in range(station['ports'])],
-                P_max = station['max total power'],
-            ))
+        for station in self.config["charging stations"]:
+            self.charging_network.append(
+                ChargeStation(
+                    location=CyclicZoneGraphLocation(
+                        station["location"], self.region
+                    ),
+                    ports=[
+                        ChargePort(
+                            station["max port power"],
+                            station["efficiency"],
+                        )
+                        for _ in range(station["ports"])
+                    ],
+                    P_max=station["max total power"],
+                )
+            )
 
-        # Initialize State and Action Spaces
-        self.observation_space = gym.spaces.Box(0,1, shape=(len(self.fleet), 2))
-        self.action_space = gym.spaces.Box(0,1, shape=(len(self.fleet), 2))
+        # -------------------------------
+        # Gym Spaces
+        # -------------------------------
+        self.observation_space = gym.spaces.Box(
+            0, 1, shape=(len(self.fleet), 2)
+        )
+        self.action_space = gym.spaces.Box(
+            0, 1, shape=(len(self.fleet), 2)
+        )
+
         self.step_count = 0
 
-        # Global state information
-        info = {}
-        info['arrived'] = [j.to_dict() for j in self.arrived]
-        info['assigned'] = [j.to_dict() for j in self.assigned]
-        info['completed'] = self.completed
-        info['rejected'] = self.rejected
-        info['inprogress'] = [j.to_dict() for j in self.inprogress]
-        info['failed'] = self.failed
-        info['charging_network'] = [s.to_dict() for s in self.charging_network]
-        info['fleet'] = [v.to_dict() for v in self.fleet]
+        # -------------------------------
+        # RESET TTM STATE (NOT MODEL)
+        # -------------------------------
+        self.soh_history = {v.vid: [] for v in self.fleet}
+        self.predicted_soh = {v.vid: None for v in self.fleet}
+
+        info = {
+            "arrived": [j.to_dict() for j in self.arrived],
+            "assigned": [],
+            "completed": self.completed,
+            "rejected": self.rejected,
+            "inprogress": [],
+            "failed": self.failed,
+            "charging_network": [
+                s.to_dict() for s in self.charging_network
+            ],
+            "fleet": [v.to_dict() for v in self.fleet],
+        }
 
         return self._get_obs(), info
 
-    def get_closest_charger(self, vehicle: Vehicle) -> ChargeStation:
-        """
-        Get the closest charger to a <vehicle>.
-        """
-        distances = []
-        for charger in self.charging_network:
-            d, t = vehicle.location.to(charger.location)
-            distances.append(d)
-        return self.charging_network[distances.index(min(distances))]
+    # ==================================================
+    # STEP
+    # ==================================================
+    def step(self, action: np.ndarray):
 
-    def get_closest_job(self, vehicle: Vehicle) -> Job:
-        """
-        Get the closest job to <vehicle> that is not inprogress or expired.
-        """
-        closest_job = None
-        distance = float('inf')
-        for job in self.arrived:
-            d, t = vehicle.location.to(job.pickup_location)
-            #if d == float('inf'):
-            #    print(job.pickup_location.region.map[1])
-            if d < distance:
-                distance = d
-                closest_job = job
-        return closest_job
+        # -------------------------------
+        # Action Execution
+        # -------------------------------
+        for idx, v in enumerate(self.fleet):
 
-    def step(self, action: numpy.array) -> Tuple[numpy.array, float, bool, bool, Dict]:
-        """Execute one timestep within the environment.
+            if (
+                action[idx, 0] > 0.5
+                and v.status
+                in [
+                    VehicleStatus.IDLE,
+                    VehicleStatus.CHARGING,
+                    VehicleStatus.TOCHARGE,
+                ]
+            ):
+                v.charge(
+                    min(
+                        self.charging_network,
+                        key=lambda c: v.location.to(c.location)[0],
+                    ),
+                    action[idx, 1],
+                )
 
-        Args:
-            action: The action to take
+            elif self.arrived and v.status == VehicleStatus.IDLE:
+                job = min(
+                    self.arrived,
+                    key=lambda j: v.location.to(j.pickup_location)[0],
+                )
+                v.service_demand(job)
+
+        # -------------------------------
+        # Vehicle & Charger Dynamics
+        # -------------------------------
+        for v in self.fleet:
+            v.tick(self.dt, {"T_a": self.T_a})
+
+        for c in self.charging_network:
+            c.tick(self.fleet, self.dt, self.T_a)
+
+        # -------------------------------
+        # Update SoH History
+        # -------------------------------
+        for v in self.fleet:
+            soh = v.battery.actual_capacity / v.battery.initial_capacity
+            self.soh_history[v.vid].append(soh)
+
+            if len(self.soh_history[v.vid]) > 512:
+                self.soh_history[v.vid].pop(0)
+
+        # -------------------------------
+        # -------------------------------
+        # Zero-Shot Prediction (Optimized)
+        # -------------------------------
+
         
-        Returns:
-            tuple: (observation, reward, terminated, truncated, info)
-        """
+        for v in self.fleet:
+            history = self.soh_history[v.vid]
 
-        # First update vehicle statuses
-        for idx in range(len(self.fleet)):
-            if action[idx,0] > 0.5 and self.fleet[idx].status in [VehicleStatus.IDLE, VehicleStatus.CHARGING, VehicleStatus.TOCHARGE]:
-                self.fleet[idx].charge(self.get_closest_charger(self.fleet[idx]), action[idx,1])
-            elif len(self.arrived) > 0 and self.fleet[idx].status in [VehicleStatus.IDLE, VehicleStatus.CHARGING, VehicleStatus.TOCHARGE]:
-                self.fleet[idx].service_demand(self.get_closest_job(self.fleet[idx]))
+            # Baseline mode (TTM disabled)
+            if not self.use_ttm:
+                self.predicted_soh[v.vid] = history[-1]
+                continue
 
-        # Update fleet
-        for vehicle in self.fleet:
-            vehicle.tick(self.dt, {'T_a': self.T_a}) # TODO: Check conditions
+            # Not enough history
+            if len(history) < 512:
+                self.predicted_soh[v.vid] = history[-1]
+                continue
 
-        # Update charging vehicles
-        for charger in self.charging_network:
-            charger.tick(self.fleet, self.dt, self.T_a)
+            # Run TTM only every N steps
+            if self.step_count % self.ttm_update_interval == 0:
+                self.predicted_soh[v.vid] = self.ttm.predict(history)
 
-        # Get new arrivals
-        self.arrived = self.arrived | self.demand.tick(self.dt)
+            # Otherwise reuse previous prediction
+            elif self.predicted_soh[v.vid] is None:
+                self.predicted_soh[v.vid] = history[-1]
+        # -------------------------------
+        # Demand Update
+        # -------------------------------
+        self.arrived |= self.demand.tick(self.dt)
 
-        # Update jobs in progress
-        to_completed = set()
-        to_failed = set()
-        for job in self.inprogress:
-            if job.status == JobStatus.COMPLETE:
-                to_completed = to_completed.union({job})
-            elif job.status == JobStatus.FAILED:
-                to_failed = to_failed.union({job})
-        self.inprogress = self.inprogress - to_completed - to_failed
-        self.completed += len(to_completed)
-        self.failed += len(to_failed)
-
-        # Update assigned jobs
-        to_inprogress = set()
-        to_failed = set()
-        for job in self.assigned:
-            if job.status == JobStatus.INPROGRESS:
-                to_inprogress = to_inprogress.union({job})
-            elif job.status == JobStatus.FAILED:
-                to_failed = to_failed.union({job})
-        self.assigned = self.assigned - to_inprogress - to_failed
-        self.failed += len(to_failed)
-        self.inprogress = self.inprogress.union(to_inprogress)
-
-        # Update arrived jobs
-        to_assigned = set()
-        to_rejected = set()
-        for job in self.arrived:
-            job.tick(self.dt)
-            if job.status == JobStatus.ASSIGNED:
-                to_assigned = to_assigned.union({job})
-            elif job.status == JobStatus.REJECTED:
-                to_rejected = to_rejected.union({job})
-            elif job.status == JobStatus.INPROGRESS:
-                to_inprogress = to_inprogress.union({job})
-        self.arrived = self.arrived - to_assigned - to_rejected - to_inprogress
-        self.assigned = self.assigned.union(to_assigned)
-        self.inprogress = self.inprogress.union(to_inprogress)
-        self.rejected += len(to_rejected)
-
-        # Update time
-        self.t = self.t + datetime.timedelta(seconds=self.dt)
+        # -------------------------------
+        # Time Update
+        # -------------------------------
+        self.t += datetime.timedelta(seconds=self.dt)
         self.step_count += 1
-        
-        print(self.t)
 
-        # Calculate info
-        info = {}
-        info['arrived'] = [j.to_dict() for j in self.arrived]
-        info['assigned'] = [j.to_dict() for j in self.assigned]
-        info['completed'] = self.completed
-        info['rejected'] = self.rejected
-        info['inprogress'] = [j.to_dict() for j in self.inprogress]
-        info['failed'] = self.failed
-        info['charging_network'] = [s.to_dict() for s in self.charging_network]
-        info['fleet'] = [v.to_dict() for v in self.fleet]
-        
-        # Calculate reward
-        # TODO: specify as lambda
+        # ==================================================
+        # TTM-AWARE REWARD
+        # ==================================================
         ALPHA = 1.0
-        BETA = 1.0
-        #reward = sum([v.battery.soc for v in self.fleet]) + LAMBDA * sum([v.battery.actual_capacity / v.battery.initial_capacity for v in self.fleet])
-        reward = self.completed + ALPHA * sum([v.battery.actual_capacity / v.battery.initial_capacity for v in self.fleet]) # - BETA * sum([1 if v.status == VehicleStatus.RECOVERY else - for v in self.fleet])
+        BETA = 2.0
+
+        current_soh_reward = sum(
+            v.battery.actual_capacity / v.battery.initial_capacity
+            for v in self.fleet
+        )
+
+        future_penalty = sum(
+            max(0.0, 1.0 - self.predicted_soh[v.vid])
+            for v in self.fleet
+        )
+
+        reward = (
+            self.completed
+            + ALPHA * current_soh_reward
+            - BETA * future_penalty
+        )
+
+        info = {
+            "arrived": [j.to_dict() for j in self.arrived],
+            "assigned": [j.to_dict() for j in self.assigned],
+            "completed": self.completed,
+            "rejected": self.rejected,
+            "inprogress": [j.to_dict() for j in self.inprogress],
+            "failed": self.failed,
+            "charging_network": [
+                s.to_dict() for s in self.charging_network
+            ],
+            "fleet": [v.to_dict() for v in self.fleet],
+        }
 
         return (
             self._get_obs(),
             reward,
-            True if self.t >= self.t_max else False,
-            True if self.step_count > 1000 else False,
-            info
+            self.t >= self.t_max,
+            self.step_count > 1000,
+            info,
         )
-
-

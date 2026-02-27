@@ -1,7 +1,10 @@
-"""Built-in Fleet Scheduling Policies.  These classes can be extended for
-future research."""
+"""Built-in Fleet Scheduling Policies.
+These classes can be extended for future research.
+"""
+
 from enum import Enum
 from typing import Dict
+from collections import deque
 
 import argparse
 import datetime
@@ -27,6 +30,9 @@ import stable_baselines3
 import torch
 
 
+# ------------------------------------------------------------------
+# Base Policy
+# ------------------------------------------------------------------
 class SchedulePolicy:
     """Abstract Policy Class."""
 
@@ -34,47 +40,127 @@ class SchedulePolicy:
         pass
 
     def schedule(self, observation: numpy.array, info: Dict) -> numpy.array:
-        """Compute a schedule given observations and info."""
         raise NotImplemented
 
 
+# ------------------------------------------------------------------
+# Baseline: 20–80 Rule
+# ------------------------------------------------------------------
 class EightyTwentyPolicy(SchedulePolicy):
-    """Charge vehicles at maximum available rate to 80% SoC, vehicles service
-    demand until SoC drops below 20%, at which point they return to the
-    nearest charger.
+    """
+    Vehicles charge when SoC < 20% and charge at max rate until 80%.
     """
 
     def __init__(self):
         super().__init__()
 
     def schedule(self, observation: numpy.array, info: Dict) -> numpy.array:
-        action = numpy.zeros((50, 2))
+        action = numpy.zeros((len(info["fleet"]), 2))
         for v in range(len(info["fleet"])):
             if observation[v, 1] < 0.2:
-                action[v, 0] = 72.1
+                action[v, 0] = 1.0
                 action[v, 1] = 72.1
         return action
 
 
-class DnnPolicy(SchedulePolicy):
-    """A DNN takes the SoC and SoH of each each vehicle and returns whether
-    the vehicle should be chargning and if so how fast.
+# ------------------------------------------------------------------
+# Simple TTM (Dummy / Moving Average)
+# ------------------------------------------------------------------
+class SimpleTTM:
     """
-    
+    Lightweight TTM-like predictor using moving average.
+    Can later be replaced with real Tiny Time Mixer.
+    """
+
+    def __init__(self, window_size=3):
+        self.window_size = window_size
+        self.history = {}
+
+    def update(self, vehicle_id, value):
+        if vehicle_id not in self.history:
+            self.history[vehicle_id] = deque(maxlen=self.window_size)
+        self.history[vehicle_id].append(value)
+
+    def predict(self, vehicle_id):
+        if vehicle_id not in self.history:
+            return None
+        return sum(self.history[vehicle_id]) / len(self.history[vehicle_id])
+
+
+# ------------------------------------------------------------------
+# TTM-Enhanced Policy (Future-Aware, Same State Size)
+# ------------------------------------------------------------------
+class TTMEnhancedPolicy(SchedulePolicy):
+    """
+    Uses TTM to predict future SoH and SoC.
+    Fuses current and predicted values by averaging.
+    State dimension remains 2.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.ttm_soh = SimpleTTM(window_size=3)
+        self.ttm_soc = SimpleTTM(window_size=3)
+
+    def schedule(self, observation: numpy.array, info: Dict) -> numpy.array:
+        num_vehicles = observation.shape[0]
+        action = numpy.zeros((num_vehicles, 2))
+
+        for v in range(num_vehicles):
+            current_soh = observation[v, 0]
+            current_soc = observation[v, 1]
+
+            # Update TTM history
+            self.ttm_soh.update(v, current_soh)
+            self.ttm_soc.update(v, current_soc)
+
+            # Predict future values
+            pred_soh = self.ttm_soh.predict(v)
+            pred_soc = self.ttm_soc.predict(v)
+
+            # Fallback if prediction not available
+            if pred_soh is None:
+                pred_soh = current_soh
+            if pred_soc is None:
+                pred_soc = current_soc
+
+            # Average fusion (KEY IDEA)
+            fused_soh = 0.5 * (current_soh + pred_soh)
+            fused_soc = 0.5 * (current_soc + pred_soc)
+
+            # Charging decision based on fused state
+            if fused_soc < 0.2:
+                action[v, 0] = 1.0
+                action[v, 1] = 72.1
+
+        return action
+
+
+# ------------------------------------------------------------------
+# DNN Policy (PPO-trained)
+# ------------------------------------------------------------------
+class DnnPolicy(SchedulePolicy):
+    """
+    PPO-trained neural network policy.
+    """
+
     def __init__(self, weights: str) -> None:
         super().__init__()
         self.dnn = torch.load(weights, weights_only=False).eval()
 
     def schedule(self, observation, info):
         with torch.no_grad():
-            x = torch.from_numpy(observation).unsqueeze(0).cuda()
-            action = self.dnn(x)[0].squeeze().cpu().detach().numpy()
+            x = torch.from_numpy(observation).unsqueeze(0)
+            action = self.dnn(x)[0].squeeze().cpu().numpy()
             action[:, 1] = action[:, 1] * 10.0
             return action
 
 
+# ------------------------------------------------------------------
+# Data Logger
+# ------------------------------------------------------------------
 class DataLogger:
-    """Get data for plots."""
+    """Logs simulator output to CSV."""
 
     def __init__(self, logfile):
         self.csvfile = open(logfile, "w")
@@ -91,16 +177,20 @@ class DataLogger:
         p_curr = []
         soh_curr = []
         state = []
+
         for v in range(50):
             p_curr.append(info["fleet"][v]["battery"]["soc"] * 72.1)
             total_power += max(0, p_curr[-1] - self.p_old[v])
+
             if info["fleet"][v]["battery"]["actual_capacity"] / 72.1 <= 0.8:
                 self.retired[v] = 1
+
             soh_curr.append(
                 info["fleet"][v]["battery"]["actual_capacity"]
                 / info["fleet"][v]["battery"]["initial_capacity"]
             )
             state.append(1 if info["fleet"][v]["status"] == "RECOVERY" else 0)
+
         self.p_old = p_curr
 
         profit = 0
@@ -116,39 +206,3 @@ class DataLogger:
 
     def close(self):
         self.csvfile.close()
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Simulate vehicle fleet")
-    parser.add_argument(
-        "-c", "--config", help="Path to configuration file for a simulation"
-    )
-    parser.add_argument("-o", "--output", help="Path to state output log")
-    parser.add_argument("-p", "--policy", help="EIGHTYTWENTY or DNN")
-    parser.add_argument("-w", "--weights", help="Path to policy weights for DNN")
-    args = parser.parse_args()
-
-    config = {}
-    with open(args.config, "r") as fp:
-        config = yaml.safe_load(fp.read())
-
-    datalogger = DataLogger(args.output)
-
-    policy = None
-    if args.policy.lower() == "eightytwenty":
-        policy = EightyTwentyPolicy()
-    elif args.policy.lower() == "dnn":
-        policy = DnnPolicy(args.weights)
-    else:
-        raise Exception("Choose a supported policy!")
-
-    environment = TaxiFleetSimulator(config)
-    observation, info = environment.reset()
-    done = False
-
-    while not done:
-        datalogger.write(info)
-        action = policy.schedule(observation, info)
-        observation, reward, done, _, info = environment.step(action)
-
-    datalogger.close()

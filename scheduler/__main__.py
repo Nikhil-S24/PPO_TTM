@@ -1,62 +1,92 @@
-"""Built-in Fleet Scheduling Policies.  These classes can be extended for
-future research."""
+"""Built-in Fleet Scheduling Policies.
+These classes can be extended for future research.
+"""
 
 import argparse
-import datetime
-import json
-import logging
-import pickle
-import random
-
-import coloredlogs
-import gymnasium as gym
-import numpy
-import torch
 import yaml
+import torch
 
-from scipy import stats
 from stable_baselines3 import PPO
 
-from simulator.job import *
-from simulator.vehicle import *
-from simulator.charger import *
-from simulator.demand import *
-from simulator.simulator import *
-
-from scheduler.policies import *
-
+from simulator.simulator import TaxiFleetSimulator
+from scheduler.policies import (
+    DataLogger,
+    EightyTwentyPolicy,
+    TTMEnhancedPolicy,
+    DnnPolicy,
+)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simulate vehicle fleet")
     parser.add_argument(
-        "-c", "--config", help="Path to configuration file for a simulation"
+        "-c", "--config", required=True,
+        help="Path to configuration file for a simulation"
     )
-    parser.add_argument("-a", "--action", help="TRAIN or EVAL")
-    parser.add_argument("-o", "--output", help="Path to state output log")
-    parser.add_argument("-p", "--policy", help="EIGHTYTWENTY or DNN")
-    parser.add_argument("-w", "--weights", help="Path to policy weights for DNN")
-    parser.add_argument("--epochs", type=int, help="Number of epochs (training)")
+    parser.add_argument(
+        "-a", "--action", required=True,
+        help="TRAIN or EVAL"
+    )
+    parser.add_argument(
+        "-o", "--output",
+        help="Path to state output log (required for EVAL)"
+    )
+    parser.add_argument(
+        "-p", "--policy",
+        help="EIGHTYTWENTY, TTM or DNN (required for EVAL)"
+    )
+    parser.add_argument(
+        "-w", "--weights",
+        help="Path to policy weights for DNN / PPO"
+    )
+    parser.add_argument(
+        "--epochs", type=int,
+        help="Number of training timesteps (TRAIN only)"
+    )
+
     args = parser.parse_args()
 
-    config = {}
+    # --------------------------------------------------
+    # Load configuration
+    # --------------------------------------------------
     with open(args.config, "r") as fp:
-        config = yaml.safe_load(fp.read())
+        config = yaml.safe_load(fp)
 
-    datalogger = DataLogger(args.output)
+    # ==================================================
+    # TRAIN MODE (PPO)
+    # ==================================================
+    if args.action.lower() == "train":
+        if args.epochs is None:
+            raise ValueError("--epochs must be specified for TRAIN")
 
-    if args.action.lower() == 'TRAIN':
         env = TaxiFleetSimulator(config)
         env.reset()
+
         model = PPO("MlpPolicy", env, verbose=1)
         model.learn(total_timesteps=args.epochs)
-        torch.save(model.policy, "ppo_policy.pt")
 
-    elif args.action.lower() == 'EVAL':
-        policy = None
+        torch.save(model.policy, "ppo_ttm.pt")
+        print("✅ PPO training complete. Model saved as ppo_ttm.pt")
+
+    # ==================================================
+    # EVAL MODE
+    # ==================================================
+    elif args.action.lower() == "eval":
+        if args.output is None or args.policy is None:
+            raise ValueError("--output and --policy must be specified for EVAL")
+
+        datalogger = DataLogger(args.output)
+
         if args.policy.lower() == "eightytwenty":
             policy = EightyTwentyPolicy()
+
+        elif args.policy.lower() == "ttm":
+            policy = TTMEnhancedPolicy()
+
         elif args.policy.lower() == "dnn":
+            if args.weights is None:
+                raise ValueError("--weights required for DNN policy")
             policy = DnnPolicy(args.weights)
+
         else:
             raise Exception("Choose a supported policy!")
 
@@ -70,6 +100,7 @@ if __name__ == "__main__":
             observation, reward, done, _, info = environment.step(action)
 
         datalogger.close()
+        print(f"✅ Evaluation complete. Output saved to {args.output}")
 
     else:
-        print('Must choose TRAIN or EVAL')
+        raise ValueError("Action must be TRAIN or EVAL")
