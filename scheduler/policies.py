@@ -56,6 +56,9 @@ class EightyTwentyPolicy(SchedulePolicy):
         super().__init__()
 
     def schedule(self, observation: numpy.array, info: Dict) -> numpy.array:
+        
+        observation = observation.reshape((len(info["fleet"]), 2))
+        
         action = numpy.zeros((len(info["fleet"]), 2))
         for v in range(len(info["fleet"])):
             if observation[v, 1] < 0.2:
@@ -104,6 +107,9 @@ class TTMEnhancedPolicy(SchedulePolicy):
         self.ttm_soc = SimpleTTM(window_size=3)
 
     def schedule(self, observation: numpy.array, info: Dict) -> numpy.array:
+        
+        observation = observation.reshape((len(info["fleet"]), 2))
+
         num_vehicles = observation.shape[0]
         action = numpy.zeros((num_vehicles, 2))
 
@@ -151,9 +157,12 @@ class DnnPolicy(SchedulePolicy):
 
     def schedule(self, observation, info):
         with torch.no_grad():
-            x = torch.from_numpy(observation).unsqueeze(0)
+            x = torch.from_numpy(observation).unsqueeze(0).float()
             action = self.dnn(x)[0].squeeze().cpu().numpy()
             
+            fleet_size = len(info["fleet"])
+            action = action.reshape((fleet_size, 2))
+
             # Clip charging decision between 0 and 1
             action[:, 0] = np.clip(action[:, 0], 0.0, 1.0)
 
@@ -168,19 +177,16 @@ class DnnPolicy(SchedulePolicy):
 class DataLogger:
     """Logs simulator output to CSV."""
 
-    def __init__(self, logfile):
+    def __init__(self, logfile, fleet_size):
+        self.fleet_size = fleet_size
         self.csvfile = open(logfile, "w")
         header = "total_revenue,total_power,completed,"
-        header += ",".join([f"soh_{i}" for i in range(50)]) + ","
-        header += ",".join([f"state_{i}" for i in range(50)])
+        header += ",".join([f"soh_{i}" for i in range(self.fleet_size)]) + ","
+        header += ",".join([f"state_{i}" for i in range(self.fleet_size)])
         self.csvfile.write(header + "\n")
-        self.csvfile.write("profit,total_power,completed,")
-        self.csvfile.write(",".join([f"soh{i}" for i in range(50)]))
-        self.csvfile.write(",")
-        self.csvfile.write(",".join([f"status{i}" for i in range(50)]))
-        self.csvfile.write("\n")
-        self.p_old = [72.1] * 50
-        self.retired = [0] * 50
+        
+        self.p_old = [72.1] * self.fleet_size
+        self.retired = [0] * self.fleet_size
 
     def write(self, info):
         total_power = 0
@@ -188,7 +194,7 @@ class DataLogger:
         soh_curr = []
         state = []
 
-        for v in range(50):
+        for v in range(self.fleet_size):
             p_curr.append(info["fleet"][v]["battery"]["soc"] * 72.1)
             total_power += max(0, p_curr[-1] - self.p_old[v])
 
@@ -208,9 +214,9 @@ class DataLogger:
         completed = info["completed"]
         entry = f"{profit},{total_power},{completed},"
 
-        for i in range(50):
+        for i in range(self.fleet_size):
             entry += f"{soh_curr[i]},"
-        entry += ",".join([f"{state[i]}" for i in range(50)])
+        entry += ",".join([f"{state[i]}" for i in range(self.fleet_size)])
         self.csvfile.write(entry + "\n")
 
     def close(self):

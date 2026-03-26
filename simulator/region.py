@@ -36,7 +36,7 @@ class Region:
 class CyclicZoneGraphLocation(Location):
     def __init__(self, zone: int, region: Region) -> None:
         super().__init__(region)
-        self.zone = zone  # ✅ preserve actual zone
+        self.zone = zone  
 
     def to_dict(self) -> Dict:
         return {"zone": self.zone}

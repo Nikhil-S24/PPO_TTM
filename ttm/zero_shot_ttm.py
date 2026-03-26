@@ -47,7 +47,7 @@ class ZeroShotTTM:
             "control_columns": [],
         }
 
-        # Load pretrained Granite TTM
+       
         self.model = get_model(
             TTM_MODEL_PATH,
             context_length=context_length,
@@ -115,16 +115,15 @@ class ZeroShotTTM:
 
         forecast = predictions.predictions[0]
 
-        # Shape: [batch, horizon, channels]
         predicted_future = forecast[0, :, 0]
         
                 
         current_soh = soh_history[-1]
 
-        # 1️⃣ Prevent SoH increase
+        
         predicted_future = np.minimum(predicted_future, current_soh)
 
-        # 2️⃣ Enforce monotonic decrease
+        
         predicted_future = np.minimum.accumulate(predicted_future)
 
         return predicted_future  # ← FULL 96-step forecast

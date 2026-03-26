@@ -27,13 +27,8 @@ class TaxiFleetSimulator(gym.Env):
         super().__init__()
         self.config = config
 
-        # ==================================================
-        # LOAD TTM ONLY ONCE (CRITICAL FIX)
-        # ==================================================
-        # =========================
-        # MANUAL TTM TOGGLE
-        # =========================
-        self.use_ttm = False   # Change to False for baseline
+        
+        self.use_ttm = True   # Change to False for baseline
 
         if self.use_ttm:
             self.ttm = ZeroShotTTM(
@@ -69,7 +64,7 @@ class TaxiFleetSimulator(gym.Env):
             obs[idx, 0] = avg_soh
             obs[idx, 1] = v.battery.soc
 
-        return obs
+        return obs.flatten()
     # ==================================================
     # RESET
     # ==================================================
@@ -146,7 +141,7 @@ class TaxiFleetSimulator(gym.Env):
         # Gym Spaces
         # -------------------------------
         self.observation_space = gym.spaces.Box(
-            0, 1, shape=(len(self.fleet), 2)
+            0, 1, shape=(len(self.fleet) * 2,)
         )
         self.action_space = gym.spaces.Box(
             0, 1, shape=(len(self.fleet), 2)
@@ -210,6 +205,9 @@ class TaxiFleetSimulator(gym.Env):
                 )
                 v.service_demand(job)
 
+                self.arrived.remove(job)
+                self.assigned.add(job)
+
         # -------------------------------
         # Vehicle & Charger Dynamics
         # -------------------------------
@@ -218,7 +216,7 @@ class TaxiFleetSimulator(gym.Env):
         # Count completed jobs safely
         for v in self.fleet:
             if hasattr(v, "job") and v.job is not None:
-                if v.job.status.name == "COMPLETE":
+                if v.job.status.name == "COMPLETE" and getattr(v.job,"counted",False)==False:
                     self.completed += 1
                     self.total_revenue += v.job.fare
                     v.job.counted=True
@@ -292,7 +290,8 @@ class TaxiFleetSimulator(gym.Env):
             else:
                 pred_mean = forecast
 
-            future_penalty += max(0.0, 1.0 - pred_mean)
+            current_soh = v.battery.actual_capacity / v.battery.initial_capacity
+            future_penalty += max(0.0, current_soh - pred_mean)
 
         reward = (
             self.completed

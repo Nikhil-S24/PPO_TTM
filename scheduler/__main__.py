@@ -74,7 +74,7 @@ if __name__ == "__main__":
         if args.output is None or args.policy is None:
             raise ValueError("--output and --policy must be specified for EVAL")
 
-        datalogger = DataLogger(args.output)
+        datalogger = DataLogger(args.output, config["fleet"]["size"])
 
         if args.policy.lower() == "eightytwenty":
             policy = EightyTwentyPolicy()
