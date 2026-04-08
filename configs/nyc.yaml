@@ -2,7 +2,7 @@ delta t: 60      # Seconds
 
 start t: 2008/12/31 22:20:23
 end t: 2009/01/01 18:20:15
-max steps: 10
+max steps: 1000
 
 city: data/nyc-district-map2.pkl
 demand: data/nyc-sample-demand.csv
