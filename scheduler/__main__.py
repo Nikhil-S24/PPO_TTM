@@ -16,6 +16,7 @@ from scheduler.policies import (
     DnnPolicy,
 )
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simulate vehicle fleet")
     parser.add_argument(
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-o", "--output",
-        help="Path to state output log (required for EVAL)"
+        help="Path to state output log (required for EVAL / TRAIN model path)"
     )
     parser.add_argument(
         "-p", "--policy",
@@ -40,7 +41,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--epochs", type=int,
-        help="Number of training timesteps (TRAIN only)"
+        help="Number of training epochs (TRAIN only)"
     )
 
     args = parser.parse_args()
@@ -61,11 +62,28 @@ if __name__ == "__main__":
         env = TaxiFleetSimulator(config)
         env.reset()
 
-        model = PPO("MlpPolicy", env, verbose=1)
-        model.learn(total_timesteps=args.epochs)
+        # ✅ IMPORTANT FIX: SCALE TRAINING
+        total_steps = args.epochs * 1000
 
-        torch.save(model.policy, "ppo_ttm.pt")
-        print("✅ PPO training complete. Model saved as ppo_ttm.pt")
+        print(f"🚀 Training PPO for {total_steps} timesteps...")
+
+        model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            n_steps=2048,
+            batch_size=256,
+            learning_rate=3e-4,
+            gamma=0.99,
+        )
+
+        model.learn(total_timesteps=total_steps)
+
+        # ✅ Save properly using output argument
+        save_path = args.output if args.output else "ppo_model.pt"
+        torch.save(model.policy, save_path)
+
+        print(f"✅ PPO training complete. Model saved as {save_path}")
 
     # ==================================================
     # EVAL MODE
