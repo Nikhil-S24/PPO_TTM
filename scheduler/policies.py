@@ -167,7 +167,7 @@ class DnnPolicy(SchedulePolicy):
             action[:, 0] = np.clip(action[:, 0], 0.0, 1.0)
 
             # Clip charging power between 0 and 72.1 kW
-            action[:, 1] = np.clip(action[:, 1] * 10.0, 0.0, 72.1)
+            action[:, 1] = np.clip(action[:, 1] * 72.1, 0.0, 72.1)
             return action
 
 

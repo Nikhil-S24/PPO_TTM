@@ -5,8 +5,11 @@ These classes can be extended for future research.
 import argparse
 import yaml
 import torch
+import numpy as np
+import gymnasium as gym # Added to define the new action space
 
 from stable_baselines3 import PPO
+from gymnasium.wrappers import TransformAction
 
 from simulator.simulator import TaxiFleetSimulator
 from scheduler.policies import (
@@ -60,12 +63,33 @@ if __name__ == "__main__":
             raise ValueError("--epochs must be specified for TRAIN")
 
         env = TaxiFleetSimulator(config)
+        
+        # ✅ CORRECTED STEP 2: SCALE TRAINING ACTIONS WITH ACTION_SPACE
+        max_power = config["charging stations"][0]["max port power"] 
+        fleet_size = config["fleet"]["size"]
+        
+        # Define the new action space bounds for the wrapper
+        # The PPO model will output values in [0, 1], but we transform them
+        # so the second column (power) reaches max_power.
+        low = np.zeros((fleet_size, 2), dtype=np.float32)
+        high = np.ones((fleet_size, 2), dtype=np.float32)
+        high[:, 1] = max_power
+        new_action_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
+
+        def scale_action(act):
+            # act is a (fleet_size, 2) array.
+            scaled = act.copy()
+            # Scaling only the second column (power) by max_power
+            scaled[:, 1] *= max_power
+            return scaled
+            
+        # The wrapper now correctly receives the new_action_space
+        env = TransformAction(env, scale_action, new_action_space)
         env.reset()
 
-        # ✅ IMPORTANT FIX: SCALE TRAINING
+        # Scale training steps based on epochs
         total_steps = args.epochs * 1000
-
-        print(f"🚀 Training PPO for {total_steps} timesteps...")
+        print(f"🚀 Training PPO for {total_steps} timesteps (Max Power: {max_power}kW)...")
 
         model = PPO(
             "MlpPolicy",

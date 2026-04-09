@@ -28,7 +28,7 @@ class TaxiFleetSimulator(gym.Env):
         super().__init__()
         self.config = config
 
-        # Dynamic TTM control
+        # Dynamic TTM control (controlled via YAML config)
         self.use_ttm = config.get("use_ttm", False)
 
         if self.use_ttm:
@@ -42,7 +42,7 @@ class TaxiFleetSimulator(gym.Env):
         self.ttm_update_interval = 50
 
     # ==================================================
-    # OBSERVATION
+    # OBSERVATION (Future-Aware Fusion)
     # ==================================================
     def _get_obs(self) -> np.ndarray:
         obs = np.zeros((len(self.fleet), 2))
@@ -59,6 +59,7 @@ class TaxiFleetSimulator(gym.Env):
             else:
                 pred_scalar = predicted_soh
 
+            # Standard fusion logic for evaluation
             avg_soh = 0.5 * (current_soh + pred_scalar)
 
             obs[idx, 0] = avg_soh
@@ -67,9 +68,10 @@ class TaxiFleetSimulator(gym.Env):
         return obs.flatten()
 
     # ==================================================
-    # RESET
+    # RESET (Gymnasium Compatible)
     # ==================================================
-    def reset(self, seed: int = None) -> Tuple[np.ndarray, Dict]:
+    def reset(self, seed: int = None, options: dict = None) -> Tuple[np.ndarray, Dict]:
+        # Gymnasium's super().reset handles the seed initialization
         super().reset(seed=seed)
 
         self.dt = float(self.config["delta t"])
@@ -96,10 +98,11 @@ class TaxiFleetSimulator(gym.Env):
         self.failed = 0
         self.total_revenue = 0
 
-        # ✅ IMPORTANT (for PPO reward)
+        # Used for per-step incremental reward calculation
         self.prev_revenue = 0
+        self.prev_completed = 0
 
-        # Fleet
+        # Fleet Initialization
         self.fleet = []
         for vid in range(self.config["fleet"]["size"]):
             self.fleet.append(
@@ -114,7 +117,7 @@ class TaxiFleetSimulator(gym.Env):
                 )
             )
 
-        # Charging
+        # Charging Network Initialization
         self.charging_network = []
         for station in self.config["charging stations"]:
             self.charging_network.append(
@@ -142,6 +145,7 @@ class TaxiFleetSimulator(gym.Env):
 
         self.step_count = 0
 
+        # Reset TTM State History
         self.soh_history = {v.vid: [] for v in self.fleet}
         self.predicted_soh = {v.vid: None for v in self.fleet}
 
@@ -159,7 +163,9 @@ class TaxiFleetSimulator(gym.Env):
     # ==================================================
     def step(self, action: np.ndarray):
 
-        # ACTION
+        # -------------------------------
+        # Action Execution
+        # -------------------------------
         for idx, v in enumerate(self.fleet):
 
             if (
@@ -187,11 +193,13 @@ class TaxiFleetSimulator(gym.Env):
                 self.arrived.remove(job)
                 self.assigned.add(job)
 
-        # UPDATE VEHICLES
+        # -------------------------------
+        # Vehicle & Charger Dynamics
+        # -------------------------------
         for v in self.fleet:
             v.tick(self.dt, {"T_a": self.T_a})
 
-        # COMPLETION TRACKING
+        # Track completed jobs and revenue
         for v in self.fleet:
             if hasattr(v, "job") and v.job is not None:
                 if v.job.status.name == "COMPLETE" and not getattr(v.job, "counted", False):
@@ -202,11 +210,11 @@ class TaxiFleetSimulator(gym.Env):
         for c in self.charging_network:
             c.tick(self.fleet, self.dt, self.T_a)
 
-        # KDE DEMAND
+        # -------------------------------
+        # KDE Demand Generation
+        # -------------------------------
         for _ in range(np.random.randint(0, 2)):
-
             ride = generate_ride(self.kde)
-
             pickup_time = self.t.strftime("%Y-%m-%d %H:%M:%S")
             drop_time = (
                 self.t + datetime.timedelta(minutes=random.randint(5, 20))
@@ -224,29 +232,79 @@ class TaxiFleetSimulator(gym.Env):
             job = Job(data, random.randint(0, 1000000), self.region)
             self.arrived.add(job)
 
-        # TIME
+        # -------------------------------
+        # TTM Prediction Logic
+        # -------------------------------
+        for v in self.fleet:
+            soh = v.battery.actual_capacity / v.battery.initial_capacity
+            self.soh_history[v.vid].append(soh)
+
+            if len(self.soh_history[v.vid]) > 512:
+                self.soh_history[v.vid].pop(0)
+
+        # Zero-Shot Prediction (every X steps)
+        for v in self.fleet:
+            history = self.soh_history[v.vid]
+
+            if not self.use_ttm or len(history) < 512:
+                self.predicted_soh[v.vid] = history[-1]
+                continue
+
+            if self.step_count % self.ttm_update_interval == 0:
+                self.predicted_soh[v.vid] = self.ttm.predict(history)
+
+        # -------------------------------
+        # Time Management
+        # -------------------------------
         self.t += datetime.timedelta(seconds=self.dt)
         self.step_count += 1
 
         # ==================================================
-        # ✅ IMPROVED PPO REWARD
+        # ✅ TTM-AWARE PPO REWARD (STEP 3 TUNING)
         # ==================================================
+        # ADJUST THESE TO MOVE PPO GRAPH BETWEEN BASELINE AND TTM
+        ALPHA = 1.0  # Revenue Weight
+        BETA = 3.0   # Current Degradation Penalty
+        GAMMA = 2.0  # TTM Foresight Penalty (Predictive)
+
+        # 1. Revenue/Job reward (per-step)
+        incremental_completed = self.completed - self.prev_completed
+        incremental_revenue = self.total_revenue - self.prev_revenue
+
+        # 2. Current SoH penalty
         soh_penalty = sum(
             1 - (v.battery.actual_capacity / v.battery.initial_capacity)
             for v in self.fleet
         )
 
-        incremental_revenue = self.total_revenue - self.prev_revenue
+        # 3. TTM Foresight penalty (Predicting future drops)
+        future_penalty = 0.0
+        for v in self.fleet:
+            forecast = self.predicted_soh[v.vid]
+            if isinstance(forecast, np.ndarray):
+                pred_mean = np.mean(forecast)
+            else:
+                pred_mean = forecast
 
+            current_soh = v.battery.actual_capacity / v.battery.initial_capacity
+            # Only penalize if we predict health will get worse
+            future_penalty += max(0.0, current_soh - pred_mean)
+
+        # Calculate combined reward
         reward = (
-            2 * self.completed
+            2 * incremental_completed
             + 0.1 * incremental_revenue
-            - 3 * soh_penalty
+            - BETA * soh_penalty
+            - GAMMA * future_penalty
         )
 
+        # Update per-step tracking variables
         self.prev_revenue = self.total_revenue
+        self.prev_completed = self.completed
 
-        # INFO
+        # -------------------------------
+        # Info & Return
+        # -------------------------------
         info = {
             "fleet": [v.to_dict() for v in self.fleet],
             "charging_network": [s.to_dict() for s in self.charging_network],

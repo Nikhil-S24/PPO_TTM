@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 # Load data
 baseline = pd.read_csv("kde_baseline.csv")
-ppo = pd.read_csv("kde_ppo.csv")
+ppo = pd.read_csv("output_ppo_new.csv")
 ttm = pd.read_csv("kde_ttm.csv")
 
 # Rolling smoothing (VERY IMPORTANT)
