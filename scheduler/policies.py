@@ -148,29 +148,25 @@ class TTMEnhancedPolicy(SchedulePolicy):
 # ------------------------------------------------------------------
 class DnnPolicy(SchedulePolicy):
     """
-    PPO-trained neural network policy.
+    PPO-trained policy loaded using Stable-Baselines3.
     """
 
     def __init__(self, weights: str) -> None:
         super().__init__()
-        self.dnn = torch.load(weights, weights_only=False).eval()
+        self.model = stable_baselines3.PPO.load(weights)
 
     def schedule(self, observation, info):
-        with torch.no_grad():
-            x = torch.from_numpy(observation).unsqueeze(0).float()
-            action = self.dnn(x)[0].squeeze().cpu().numpy()
-            
-            fleet_size = len(info["fleet"])
-            action = action.reshape((fleet_size, 2))
+        action, _ = self.model.predict(observation, deterministic=True)
 
-            # Clip charging decision between 0 and 1
-            action[:, 0] = np.clip(action[:, 0], 0.0, 1.0)
+        fleet_size = len(info["fleet"])
+        action = np.array(action).reshape((fleet_size, 2))
 
-            # Clip charging power between 0 and 72.1 kW
-            action[:, 1] = np.clip(action[:, 1] * 72.1, 0.0, 72.1)
-            return action
+        # keep action within valid range
+        action[:, 0] = np.clip(action[:, 0], 0.0, 1.0)
+        action[:, 1] = np.clip(action[:, 1], 0.0, 1.0)
 
-
+        return action
+        
 # ------------------------------------------------------------------
 # Data Logger
 # ------------------------------------------------------------------

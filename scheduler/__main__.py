@@ -4,12 +4,9 @@ These classes can be extended for future research.
 
 import argparse
 import yaml
-import torch
-import numpy as np
-import gymnasium as gym # Added to define the new action space
+import gymnasium as gym
 
 from stable_baselines3 import PPO
-from gymnasium.wrappers import TransformAction
 
 from simulator.simulator import TaxiFleetSimulator
 from scheduler.policies import (
@@ -18,6 +15,22 @@ from scheduler.policies import (
     TTMEnhancedPolicy,
     DnnPolicy,
 )
+
+
+class PPORewardWrapper(gym.Wrapper):
+    """Use original-style dense reward for PPO training only."""
+
+    def step(self, action):
+        obs, _, terminated, truncated, info = self.env.step(action)
+
+        completed = info.get("completed", 0)
+        soh_sum = sum(
+            v["battery"]["actual_capacity"] / v["battery"]["initial_capacity"]
+            for v in info["fleet"]
+        )
+
+        reward = completed + soh_sum
+        return obs, reward, terminated, truncated, info
 
 
 if __name__ == "__main__":
@@ -62,52 +75,32 @@ if __name__ == "__main__":
         if args.epochs is None:
             raise ValueError("--epochs must be specified for TRAIN")
 
-        env = TaxiFleetSimulator(config)
-        
-        # ✅ CORRECTED STEP 2: SCALE TRAINING ACTIONS WITH ACTION_SPACE
-        max_power = config["charging stations"][0]["max port power"] 
-        fleet_size = config["fleet"]["size"]
-        
-        # Define the new action space bounds for the wrapper
-        # The PPO model will output values in [0, 1], but we transform them
-        # so the second column (power) reaches max_power.
-        low = np.zeros((fleet_size, 2), dtype=np.float32)
-        high = np.ones((fleet_size, 2), dtype=np.float32)
-        high[:, 1] = max_power
-        new_action_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
-
-        def scale_action(act):
-            # act is a (fleet_size, 2) array.
-            scaled = act.copy()
-            # Scaling only the second column (power) by max_power
-            scaled[:, 1] *= max_power
-            return scaled
-            
-        # The wrapper now correctly receives the new_action_space
-        env = TransformAction(env, scale_action, new_action_space)
+        # PPO-only reward shaping wrapper (does NOT affect baseline/TTM eval path)
+        env = PPORewardWrapper(TaxiFleetSimulator(config))
         env.reset()
 
         # Scale training steps based on epochs
-        total_steps = args.epochs * 1000
-        print(f"🚀 Training PPO for {total_steps} timesteps (Max Power: {max_power}kW)...")
+        total_steps = args.epochs * 10000
+        print(f"Training PPO for {total_steps} timesteps...")
 
         model = PPO(
             "MlpPolicy",
             env,
             verbose=1,
             n_steps=2048,
-            batch_size=256,
-            learning_rate=3e-4,
+            batch_size=512,
+            learning_rate=1e-4,
             gamma=0.99,
+            ent_coef=0.02,
+            clip_range=0.1,
         )
 
         model.learn(total_timesteps=total_steps)
 
-        # ✅ Save properly using output argument
         save_path = args.output if args.output else "ppo_model.pt"
-        torch.save(model.policy, save_path)
+        model.save(save_path)
 
-        print(f"✅ PPO training complete. Model saved as {save_path}")
+        print(f"PPO training complete. Model saved as {save_path}")
 
     # ==================================================
     # EVAL MODE
@@ -142,7 +135,7 @@ if __name__ == "__main__":
             observation, reward, done, _, info = environment.step(action)
 
         datalogger.close()
-        print(f"✅ Evaluation complete. Output saved to {args.output}")
+        print(f"Evaluation complete. Output saved to {args.output}")
 
     else:
         raise ValueError("Action must be TRAIN or EVAL")

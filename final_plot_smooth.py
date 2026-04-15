@@ -3,8 +3,20 @@ import matplotlib.pyplot as plt
 
 # Load data
 baseline = pd.read_csv("kde_baseline.csv")
-ppo = pd.read_csv("output_ppo_new.csv")
+ppo = pd.read_csv("kde_ppo_v3.csv")
 ttm = pd.read_csv("kde_ttm.csv")
+
+print("\n=== baseline total_revenue ===")
+print("first 5:", baseline["total_revenue"].head(5).tolist())
+print("last 5 :", baseline["total_revenue"].tail(5).tolist())
+
+print("\n=== ppo total_revenue ===")
+print("first 5:", ppo["total_revenue"].head(5).tolist())
+print("last 5 :", ppo["total_revenue"].tail(5).tolist())
+
+print("\n=== ttm total_revenue ===")
+print("first 5:", ttm["total_revenue"].head(5).tolist())
+print("last 5 :", ttm["total_revenue"].tail(5).tolist())
 
 # Rolling smoothing (VERY IMPORTANT)
 window = 50

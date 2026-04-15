@@ -27,7 +27,9 @@ class TaxiFleetSimulator(gym.Env):
     def __init__(self, config: Dict) -> None:
         super().__init__()
         self.config = config
-
+        self.max_port_power = max(
+    station["max port power"] for station in config["charging stations"]
+)
         # Dynamic TTM control (controlled via YAML config)
         self.use_ttm = config.get("use_ttm", False)
 
@@ -166,22 +168,30 @@ class TaxiFleetSimulator(gym.Env):
         # -------------------------------
         # Action Execution
         # -------------------------------
+        idle_charge_penalty = 0.0
+
+        low_soc_penalty = 0.0
+
         for idx, v in enumerate(self.fleet):
 
             if (
-                action[idx, 0] > 0.5
+                (action[idx, 0] > 0.5 or action[idx, 1] > 0.2)
                 and v.status in [
                     VehicleStatus.IDLE,
                     VehicleStatus.CHARGING,
                     VehicleStatus.TOCHARGE,
                 ]
             ):
+
+                if self.arrived and v.battery.soc > 0.4:
+                    idle_charge_penalty += 1.0
+
                 v.charge(
                     min(
                         self.charging_network,
                         key=lambda c: v.location.to(c.location)[0],
                     ),
-                    action[idx, 1],
+                    float(action[idx, 1]) * self.max_port_power,
                 )
 
             elif self.arrived and v.status == VehicleStatus.IDLE:
@@ -192,6 +202,10 @@ class TaxiFleetSimulator(gym.Env):
                 v.service_demand(job)
                 self.arrived.remove(job)
                 self.assigned.add(job)
+            
+            if v.battery.soc < 0.5 and v.status != VehicleStatus.CHARGING:
+                low_soc_penalty += (0.5 - v.battery.soc)
+
 
         # -------------------------------
         # Vehicle & Charger Dynamics
@@ -291,12 +305,13 @@ class TaxiFleetSimulator(gym.Env):
             future_penalty += max(0.0, current_soh - pred_mean)
 
         # Calculate combined reward
+        # Paper-aligned simplified reward for PPO behavior debugging
         reward = (
-            2 * incremental_completed
-            + 0.1 * incremental_revenue
-            - BETA * soh_penalty
-            - GAMMA * future_penalty
-        )
+    2 * incremental_completed
+    + 0.1 * incremental_revenue
+    - 0.5 * idle_charge_penalty
+    - 5.0 * low_soc_penalty
+)
 
         # Update per-step tracking variables
         self.prev_revenue = self.total_revenue
