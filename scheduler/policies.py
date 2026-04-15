@@ -165,6 +165,14 @@ class DnnPolicy(SchedulePolicy):
         action[:, 0] = np.clip(action[:, 0], 0.0, 1.0)
         action[:, 1] = np.clip(action[:, 1], 0.0, 1.0)
 
+        obs = np.array(observation).reshape((fleet_size, 2))
+        charging_mask = (obs[:, 1] < 0.2) | (
+            (obs[:, 1] < 0.8)
+            & np.array([v["status"] == "CHARGING" for v in info["fleet"]])
+        )
+        action[charging_mask, 0] = 1.0
+        action[charging_mask, 1] = 1.0
+
         return action
         
 # ------------------------------------------------------------------

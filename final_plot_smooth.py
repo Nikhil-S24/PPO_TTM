@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 # Load data
 baseline = pd.read_csv("kde_baseline.csv")
-ppo = pd.read_csv("kde_ppo_v3.csv")
+ppo = pd.read_csv("kde_ppo_v13_e20_fallback.csv")
 ttm = pd.read_csv("kde_ttm.csv")
 
 print("\n=== baseline total_revenue ===")

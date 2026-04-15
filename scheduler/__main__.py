@@ -18,20 +18,35 @@ from scheduler.policies import (
 
 
 class PPORewardWrapper(gym.Wrapper):
-    """Use original-style dense reward for PPO training only."""
+    """PPO-only reward shaping; does not affect baseline/TTM eval."""
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.prev_completed = 0
+        self.prev_revenue = 0.0
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        self.prev_completed = info.get("completed", 0)
+        self.prev_revenue = info.get("total_revenue", 0.0)
+        return obs, info
 
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
 
         completed = info.get("completed", 0)
-        soh_sum = sum(
-            v["battery"]["actual_capacity"] / v["battery"]["initial_capacity"]
-            for v in info["fleet"]
-        )
+        revenue = info.get("total_revenue", 0.0)
 
-        reward = completed + soh_sum
+        inc_completed = completed - self.prev_completed
+        inc_revenue = revenue - self.prev_revenue
+
+        # Revenue-focused dense reward for PPO
+        reward = inc_revenue
+
+        self.prev_completed = completed
+        self.prev_revenue = revenue
+
         return obs, reward, terminated, truncated, info
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simulate vehicle fleet")
@@ -87,12 +102,12 @@ if __name__ == "__main__":
             "MlpPolicy",
             env,
             verbose=1,
-            n_steps=2048,
-            batch_size=512,
-            learning_rate=1e-4,
+            n_steps=4096,
+            batch_size=1024,
+            learning_rate=5e-5,
             gamma=0.99,
-            ent_coef=0.02,
-            clip_range=0.1,
+            ent_coef=0.05,
+            clip_range=0.05,
         )
 
         model.learn(total_timesteps=total_steps)

@@ -7,7 +7,7 @@ cfg = yaml.safe_load(open("configs/nyc.yaml"))
 env = TaxiFleetSimulator(cfg)
 obs, info = env.reset()
 
-model = PPO.load("ppo_sb3_nyc_v9")
+model = PPO.load("ppo_sb3_nyc_v11")
 
 acts = []
 term = False
