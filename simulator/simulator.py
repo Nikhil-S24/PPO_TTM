@@ -195,11 +195,18 @@ class TaxiFleetSimulator(gym.Env):
                 )
 
             elif self.arrived and v.status == VehicleStatus.IDLE:
+
+                # PPO decides whether to accept job
+                if action[idx, 1] < 0.5:
+                    continue
+
                 job = min(
                     self.arrived,
                     key=lambda j: v.location.to(j.pickup_location)[0],
                 )
+
                 v.service_demand(job)
+
                 self.arrived.remove(job)
                 self.assigned.add(job)
             
