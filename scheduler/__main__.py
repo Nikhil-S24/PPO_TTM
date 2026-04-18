@@ -135,7 +135,19 @@ if __name__ == "__main__":
         elif args.policy.lower() == "dnn":
             if args.weights is None:
                 raise ValueError("--weights required for DNN policy")
-            policy = DnnPolicy(args.weights)
+
+            # ✅ Load PPO model directly
+            model = PPO.load(args.weights)
+
+            class PPOPolicyWrapper:
+                def __init__(self, model):
+                    self.model = model
+
+                def schedule(self, observation, info):
+                    action, _ = self.model.predict(observation, deterministic=True)
+                    return action
+
+            policy = PPOPolicyWrapper(model)
 
         else:
             raise Exception("Choose a supported policy!")

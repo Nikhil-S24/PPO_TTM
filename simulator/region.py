@@ -1,5 +1,5 @@
 """
-Synthetic Multi-Zone Region Map (For Mid-Review Testing)
+Synthetic Multi-Zone Region Map (Improved for 5-year simulation)
 """
 
 from typing import Dict, Tuple
@@ -36,7 +36,7 @@ class Region:
 class CyclicZoneGraphLocation(Location):
     def __init__(self, zone: int, region: Region) -> None:
         super().__init__(region)
-        self.zone = zone  
+        self.zone = zone
 
     def to_dict(self) -> Dict:
         return {"zone": self.zone}
@@ -46,18 +46,20 @@ class CyclicZoneGraphLocation(Location):
 
 
 # ==========================================================
-# Synthetic 10-Zone Circular Graph
+# Synthetic Multi-Zone Circular Graph
 # ==========================================================
 
 class CyclicZoneGraph(Region):
     def __init__(self, mapfile: str) -> None:
-        print("[DEBUG] Using synthetic 10-zone circular city map")
+        print("[DEBUG] Using synthetic circular city map")
 
-        self.num_zones = 10
-        self.radius = 5.0  # km
-        self.speed_kmph = 30.0  # average speed
+        # ✅ Increased zones for realism
+        self.num_zones = 50
 
-        # Place zones in circle
+        self.radius = 10.0  # km (larger city)
+        self.speed_kmph = 30.0  # default speed
+
+        # Generate circular coordinates
         self.coordinates = {}
 
         for i in range(self.num_zones):
@@ -66,7 +68,7 @@ class CyclicZoneGraph(Region):
             y = self.radius * math.sin(angle)
             self.coordinates[i] = (x, y)
 
-        # Provide zone list
+        # Map structure
         self.map = {i: {} for i in range(self.num_zones)}
 
     # ------------------------------------------------------
@@ -84,8 +86,23 @@ class CyclicZoneGraph(Region):
         # Euclidean distance
         dist = math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
-        # Convert distance to travel time (seconds)
-        time_hours = dist / self.speed_kmph
+        # --------------------------------------------------
+        # Traffic-aware speed
+        # --------------------------------------------------
+        if conditions and "hour" in conditions:
+            hour = conditions["hour"]
+
+            if 7 <= hour <= 10 or 17 <= hour <= 20:
+                speed = 20.0   # rush hour (slow)
+            elif 0 <= hour <= 5:
+                speed = 40.0   # night (fast)
+            else:
+                speed = 30.0   # normal
+        else:
+            speed = self.speed_kmph
+
+        # Convert to time
+        time_hours = dist / speed
         time_seconds = time_hours * 3600
 
         return (dist, time_seconds)

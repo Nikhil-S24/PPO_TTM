@@ -162,7 +162,7 @@ class MultiStageBattery(Battery):
             * math.exp(-psi * (1 / T_a - 1 / T_ref))
         )
         N_cref = 513  # Wan et al. 2024 (Good for single and multistage)
-        Q_loss = theta_t / N_cref
+        Q_loss = (theta_t / N_cref) * (dt / (24 * 3600))
         assert Q_loss >= 0
 
         self.soc = DoD_t

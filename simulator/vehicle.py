@@ -1,18 +1,13 @@
 """Model of an electric vehicle."""
 
-from typing import Dict, ForwardRef, Union
+from typing import Dict, Union
 from enum import Enum
-
 
 from simulator.battery import *
 from simulator.region import *
 
 
 class VehicleStatus(Enum):
-    """
-    Vehicle states.
-    """
-
     IDLE = 1
     TOPICKUP = 2
     TOCHARGE = 3
@@ -24,16 +19,6 @@ class VehicleStatus(Enum):
 
 
 class Vehicle:
-    """Electric Vehicle.
-
-    Args:
-        model: select from previously defined vehicles: ['byd e6'] or provide
-            a diction in the format {'capacity': kWh, 'efficiency': kWh/100km}
-        battery: select from previously defined models: ['multistage'] or
-            provide an object inheriting from Battery.
-        location: starting location of the vehicle.
-    """
-
     def __init__(
         self,
         model: Union[str, Dict[str, float]],
@@ -41,9 +26,12 @@ class Vehicle:
         location: Location,
         vid: int,
     ) -> None:
+
         self.model = model
         self.vid = vid
         self.charger = None
+
+        # Vehicle specs
         if self.model.lower() == "byd e6":
             capacity = 71.7
             self.efficiency = 17.1
@@ -51,136 +39,117 @@ class Vehicle:
             capacity = model["capacity"]
             self.efficiency = model["efficiency"]
 
+        # Battery
         if battery.lower() == "multistage":
             self.battery = MultiStageBattery(capacity)
         else:
             self.battery = battery
 
+        # Location & state
         self.depo = location
         self.location = location
         self.destination = location
-        self.distance_remaining = 0.0
+
         self.time_remaining = 0.0
-        self.time_elapsed = 0.0
         self.status = VehicleStatus.IDLE
 
-    def to_dict(self) -> Dict[str, Union[Dict, float, str]]:
-        """Return a dictionary representing the current state of the vehicle.
+        self.job = None
+        self.preferred_rate = 0.0
 
-        Returns:
-            {
-                location: vehicle's current location in the region,
-                destination: vehicle's current destination (same as location
-                    if vehicle is not travelling),
-                distance_remaining: distance to destination (km),
-                time_remaining: time to destination (seconds),
-                status: vehicle's current state,
-                battery: the current state of the vehicle's battery,
-                time_elapsed: time elapsed since the vehicle began travel
-            }
-        """
+    # ------------------------------------------------------
+
+    def to_dict(self) -> Dict:
         return {
             "location": self.location.to_dict(),
             "destination": self.destination.to_dict(),
-            "distance_remaining": self.distance_remaining,
             "time_remaining": self.time_remaining,
             "status": self.status.name,
             "battery": self.battery.to_dict(),
-            "time_elapsed": self.time_elapsed,
         }
 
-    def service_demand(self, job: ForwardRef("Job")) -> None:
-        """
-        Assign a vehicle to <job>.
-        """
+    # ------------------------------------------------------
+
+    def service_demand(self, job):
         if self.charger:
             self.charger.disconnect(self.vid)
-        self.destination = job.pickup_location
-        self.time_remaining = self.location.to(self.destination)[1]
+
         self.job = job
         self.job.assign_vehicle(self.vid)
+
+        self.destination = job.pickup_location
+        self.time_remaining = self.location.to(self.destination)[1]
+
         self.status = VehicleStatus.TOPICKUP
 
-    def charge(
-        self, charger: ForwardRef("ChargeStation"), preferred_rate: float
-    ) -> None:
-        """
-        Assign a vehicle to a <charger> and attempt to charge at
-        <preferred_rate> (kW). The preferred rate is not guaranteed, but
-        cannot be exceeded during charging.
-        """
+    # ------------------------------------------------------
+
+    def charge(self, charger, preferred_rate):
         self.charger = charger
         self.destination = charger.location
         self.time_remaining = self.location.to(self.destination)[1]
         self.preferred_rate = preferred_rate
-        if self.status != VehicleStatus.CHARGING or self.location != self.destination:
+
+        if self.status != VehicleStatus.CHARGING:
             self.status = VehicleStatus.TOCHARGE
             self.charger.disconnect(self.vid)
 
-    def initialize_recovery_state(self) -> None:
-        """
-        Set the vehicle to return to the depot fully charge after a 24 hour
-        timeout period.
-        """
+    # ------------------------------------------------------
+
+    def initialize_recovery_state(self):
         self.destination = self.depo
-        self.time_remaining = 24 * 60 * 60
+        self.time_remaining = 24 * 3600
         self.battery.charge(self.battery.actual_capacity, 3600, T_a=25)
 
-    def tick(self, dt: float, conditions: Dict[str, int]) -> None:
-        """
-        Update the vehicle's state.
+    # ------------------------------------------------------
 
-        Args:
-            dt: tick length (seconds).
-            conditions: environmental conditions present during the tick.
-        """
+    def tick(self, dt: float, conditions: Dict[str, int]):
+
+        # -------------------------------
+        # IDLE
+        # -------------------------------
         if self.status == VehicleStatus.IDLE:
             self.battery.age(dt, conditions["T_a"])
+
+        # -------------------------------
+        # GO TO PICKUP
+        # -------------------------------
         elif self.status == VehicleStatus.TOPICKUP:
             self.time_remaining -= dt
+
             if self.time_remaining <= 0:
-                distance = self.location.to(self.destination)[0]
-                dW = distance * self.efficiency / 100
+                # update location
+                self.location = self.destination
+
+                # energy consumption
+                dist, _ = self.location.to(self.destination)
+                dW = dist * self.efficiency / 100
                 self.battery.discharge(dW, dt, conditions["T_a"])
+
                 if self.battery.soc <= 0:
                     self.status = VehicleStatus.RECOVERY
                     self.job.fail()
                     self.initialize_recovery_state()
                 else:
+                    # go to dropoff
                     self.destination = self.job.dropoff_location
-                    self.time_remaining = self.location.to(self.destination)[1]
+                    self.time_remaining = self.job.duration
+
                     self.job.inprogress()
                     self.status = VehicleStatus.ONJOB
-        elif self.status == VehicleStatus.TOCHARGE:
-            self.time_remaining -= dt
-            if self.time_remaining <= 0:
-                distance = self.location.to(self.destination)[0]
-                dW = distance * self.efficiency / 100
-                self.battery.discharge(dW, dt, conditions["T_a"])
-                if self.battery.soc <= 0:
-                    self.status = VehicleStatus.RECOVERY
-                    self.initialize_recovery_state()
-                else:
-                    self.status = VehicleStatus.CHARGING
-        elif self.status == VehicleStatus.CHARGING:
-            self.charger.request_charge(self.preferred_rate, self.vid)
-        elif self.status == VehicleStatus.TOLOC:
-            self.time_remaining -= dt
-            if self.time_remaining <= 0:
-                distance = self.location.to(self.destination)[0]
-                dW = distance * self.efficiency / 100
-                self.battery.discharge(dW, dt, conditions["T_a"])
-                if self.battery.soc <= 0:
-                    self.status = VehicleStatus.RECOVERY
-                    self.initialize_recovery_state()
-                else:
-                    self.status = VehicleStatus.IDLE
+
+        # -------------------------------
+        # ON JOB
+        # -------------------------------
         elif self.status == VehicleStatus.ONJOB:
             self.time_remaining -= dt
+
             if self.time_remaining <= 0:
-                distance = self.location.to(self.destination)[0]
-                dW = distance * self.efficiency / 100
+                self.location = self.destination
+
+                dist, _ = self.location.to(self.destination)
+                dW = dist * self.efficiency / 100
                 self.battery.discharge(dW, dt, conditions["T_a"])
+
                 if self.battery.soc <= 0:
                     self.status = VehicleStatus.RECOVERY
                     self.job.fail()
@@ -188,9 +157,39 @@ class Vehicle:
                 else:
                     self.status = VehicleStatus.IDLE
                     self.job.complete()
+
+        # -------------------------------
+        # GO TO CHARGE
+        # -------------------------------
+        elif self.status == VehicleStatus.TOCHARGE:
+            self.time_remaining -= dt
+
+            if self.time_remaining <= 0:
+                self.location = self.destination
+
+                dist, _ = self.location.to(self.destination)
+                dW = dist * self.efficiency / 100
+                self.battery.discharge(dW, dt, conditions["T_a"])
+
+                if self.battery.soc <= 0:
+                    self.status = VehicleStatus.RECOVERY
+                    self.initialize_recovery_state()
+                else:
+                    self.status = VehicleStatus.CHARGING
+
+        # -------------------------------
+        # CHARGING
+        # -------------------------------
+        elif self.status == VehicleStatus.CHARGING:
+            self.charger.request_charge(self.preferred_rate, self.vid)
+
+        # -------------------------------
+        # RECOVERY
+        # -------------------------------
         elif self.status == VehicleStatus.RECOVERY:
             self.time_remaining -= dt
             if self.time_remaining <= 0:
                 self.status = VehicleStatus.IDLE
+
         else:
             raise Exception(f"Invalid vehicle state: {self.status}")

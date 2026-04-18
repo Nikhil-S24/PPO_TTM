@@ -1,42 +1,48 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 
+# -------------------------------
 # Load data
+# -------------------------------
 baseline = pd.read_csv("kde_baseline.csv")
-ppo = pd.read_csv("kde_ppo_v13_e20_fallback.csv")
+ppo = pd.read_csv("kde_ppo.csv")
 ttm = pd.read_csv("kde_ttm.csv")
 
-print("\n=== baseline total_revenue ===")
-print("first 5:", baseline["total_revenue"].head(5).tolist())
-print("last 5 :", baseline["total_revenue"].tail(5).tolist())
+# -------------------------------
+# Debug check (VERY IMPORTANT)
+# -------------------------------
+print("\n=== FINAL VALUES ===")
+print("Baseline:", baseline["total_revenue"].iloc[-1])
+print("PPO     :", ppo["total_revenue"].iloc[-1])
+print("TTM     :", ttm["total_revenue"].iloc[-1])
 
-print("\n=== ppo total_revenue ===")
-print("first 5:", ppo["total_revenue"].head(5).tolist())
-print("last 5 :", ppo["total_revenue"].tail(5).tolist())
+# -------------------------------
+# Convert steps → years (5-year simulation)
+# -------------------------------
+steps = len(baseline)
+years = np.linspace(0, 5, steps)
 
-print("\n=== ttm total_revenue ===")
-print("first 5:", ttm["total_revenue"].head(5).tolist())
-print("last 5 :", ttm["total_revenue"].tail(5).tolist())
-
-# Rolling smoothing (VERY IMPORTANT)
-window = 50
-
-baseline_profit = baseline["total_revenue"].rolling(window).mean()
-ppo_profit = ppo["total_revenue"].rolling(window).mean()
-ttm_profit = ttm["total_revenue"].rolling(window).mean()
-
-# Plot
+# -------------------------------
+# Plot cumulative revenue
+# -------------------------------
 plt.figure(figsize=(10, 6))
 
-plt.plot(baseline_profit, label="Baseline (80-20)", linewidth=2)
-plt.plot(ppo_profit, label="PPO", linewidth=2)
-plt.plot(ttm_profit, label="TTM", linewidth=2)
+plt.plot(years, baseline["total_revenue"], label="Baseline (80-20)", linewidth=2)
+plt.plot(years, ppo["total_revenue"], label="PPO-RL", linewidth=2)
+plt.plot(years, ttm["total_revenue"], label="TTM", linewidth=2)
 
-plt.xlabel("Time Steps")
-plt.ylabel("Profit")
-plt.title("Profit Comparison (Smoothed - KDE Demand)")
+# -------------------------------
+# Labels & styling
+# -------------------------------
+plt.xlabel("Years")
+plt.ylabel("Cumulative Revenue ($)")
+plt.title("Cumulative Revenue over 5 Years")
+
+# Scientific notation for large values
+plt.ticklabel_format(style='sci', axis='y', scilimits=(6, 6))
+
 plt.legend()
-
 plt.grid()
 
 plt.show()
