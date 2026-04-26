@@ -117,11 +117,12 @@ class Vehicle:
             self.time_remaining -= dt
 
             if self.time_remaining <= 0:
+                prev_location = self.location
                 # update location
                 self.location = self.destination
 
                 # energy consumption
-                dist, _ = self.location.to(self.destination)
+                dist, _ = prev_location.to(self.destination)
                 dW = dist * self.efficiency / 100
                 self.battery.discharge(dW, dt, conditions["T_a"])
 
@@ -144,9 +145,10 @@ class Vehicle:
             self.time_remaining -= dt
 
             if self.time_remaining <= 0:
+                prev_location = self.location
                 self.location = self.destination
 
-                dist, _ = self.location.to(self.destination)
+                dist, _ = prev_location.to(self.destination)
                 dW = dist * self.efficiency / 100
                 self.battery.discharge(dW, dt, conditions["T_a"])
 
@@ -165,9 +167,10 @@ class Vehicle:
             self.time_remaining -= dt
 
             if self.time_remaining <= 0:
+                prev_location = self.location
                 self.location = self.destination
 
-                dist, _ = self.location.to(self.destination)
+                dist, _ = prev_location.to(self.destination)
                 dW = dist * self.efficiency / 100
                 self.battery.discharge(dW, dt, conditions["T_a"])
 

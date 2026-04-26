@@ -1,40 +1,27 @@
-use_ttm: true
+use_ttm: false
 
-# -----------------------------------
-# Simulation Time Settings
-# -----------------------------------
-delta t: 3600        # 1 hour per step
+delta t: 3600      # Seconds
 
-start t: 2008/12/31 00:00:00
-end t: 2018/12/31 00:00:00   # ~5 years
+start t: 2008/12/31 22:20:23
+end t: 2014/01/01 18:20:15
+max steps: 50000
 
-max steps: 100000             # enough to cover full duration
+city: data/nyc-map.pkl
+demand: data/nyc-demand.csv
 
-# -----------------------------------
-# Environment
-# -----------------------------------
-city: data/nyc-district-map2.pkl
-demand: data/nyc-sample-demand.csv
-
-# -----------------------------------
-# Fleet Configuration
-# -----------------------------------
 fleet:
-  size: 10
+  size: 50
   vehicle: BYD E6
   battery model: multistage
   depot: none
 
-# -----------------------------------
-# Charging Infrastructure
-# -----------------------------------
 charging stations:
   - location: 208
     max port power: 10
-    max total power: 50
+    max total power: 500
     efficiency: 0.9
     ports: 10
-
+    max total power: 50
   - location: 1
     max port power: 50
     max total power: 500

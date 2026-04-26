@@ -86,12 +86,12 @@ if __name__ == "__main__":
     # ==================================================
     # TRAIN MODE (PPO)
     # ==================================================
-    if args.action.lower() == "train":
+    if args.action.lower() == 'train':
         if args.epochs is None:
             raise ValueError("--epochs must be specified for TRAIN")
 
         # PPO-only reward shaping wrapper (does NOT affect baseline/TTM eval path)
-        env = PPORewardWrapper(TaxiFleetSimulator(config))
+        env = TaxiFleetSimulator(config)
         env.reset()
 
         # Scale training steps based on epochs
@@ -112,7 +112,7 @@ if __name__ == "__main__":
 
         model.learn(total_timesteps=total_steps)
 
-        save_path = args.output if args.output else "ppo_model.pt"
+        save_path = args.output if args.output else "ppo_model"
         model.save(save_path)
 
         print(f"PPO training complete. Model saved as {save_path}")
@@ -120,7 +120,7 @@ if __name__ == "__main__":
     # ==================================================
     # EVAL MODE
     # ==================================================
-    elif args.action.lower() == "eval":
+    elif args.action.lower() == 'eval':
         if args.output is None or args.policy is None:
             raise ValueError("--output and --policy must be specified for EVAL")
 
@@ -135,19 +135,7 @@ if __name__ == "__main__":
         elif args.policy.lower() == "dnn":
             if args.weights is None:
                 raise ValueError("--weights required for DNN policy")
-
-            # ✅ Load PPO model directly
-            model = PPO.load(args.weights)
-
-            class PPOPolicyWrapper:
-                def __init__(self, model):
-                    self.model = model
-
-                def schedule(self, observation, info):
-                    action, _ = self.model.predict(observation, deterministic=True)
-                    return action
-
-            policy = PPOPolicyWrapper(model)
+            policy = DnnPolicy(args.weights)
 
         else:
             raise Exception("Choose a supported policy!")

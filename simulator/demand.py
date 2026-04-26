@@ -32,7 +32,7 @@ class Demand:
 class ReplayDemand(Demand):
     """
     KDE-based demand generator.
-    Supports long-term simulation (5 years).
+    Supports long-term simulation.
     """
 
     def __init__(self, path: str, region, loop: bool = False) -> None:
@@ -71,10 +71,13 @@ class ReplayDemand(Demand):
         rides = generate_rides(self.kde, self.t)
 
         for ride in rides:
-
             # Ensure valid zone indices
             pickup_zone = int(ride["pickup_location"]) % 10
             drop_zone = int(ride["dropoff_location"]) % 10
+
+            # Skip invalid zones not present in map
+            if pickup_zone not in self.region.map or drop_zone not in self.region.map:
+                continue
 
             pickup_loc = CyclicZoneGraphLocation(pickup_zone, self.region)
             drop_loc = CyclicZoneGraphLocation(drop_zone, self.region)
@@ -83,6 +86,10 @@ class ReplayDemand(Demand):
             # Distance & travel time
             # -------------------------------
             distance, travel_time = pickup_loc.to(drop_loc)
+
+            # Skip disconnected zone pairs (author fix)
+            if distance == float("inf") or travel_time == float("inf"):
+                continue
 
             # Safety: avoid zero distance
             distance = max(0.5, distance)
@@ -126,7 +133,7 @@ class ReplayDemand(Demand):
             job = Job(
                 job_data,
                 job_id=self.global_idx,
-                region=self.region
+                region=self.region,
             )
 
             self.global_idx += 1
