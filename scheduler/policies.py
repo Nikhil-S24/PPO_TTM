@@ -13,7 +13,6 @@ import logging
 import pickle
 import random
 
-import coloredlogs
 import gymnasium as gym
 import numpy
 import yaml
@@ -47,32 +46,29 @@ class SchedulePolicy:
 # Baseline: 20–80 Rule
 # ------------------------------------------------------------------
 class EightyTwentyPolicy(SchedulePolicy):
-    """
-    Vehicles charge when SoC < 20% and charge at max rate until 80%.
+    """Charge vehicles at maximum available rate to 80% SoC, vehicles service
+    demand until SoC drops below 20%, at which point they return to the
+    nearest charger.
     """
 
     def __init__(self):
         super().__init__()
 
     def schedule(self, observation: numpy.array, info: Dict) -> numpy.array:
-        observation = observation.reshape((len(info["fleet"]), 2))
-
-        action = numpy.zeros((len(info["fleet"]), 2))
-        for v in range(len(info["fleet"])):
+        fleet_size = len(info["fleet"])
+        action = numpy.zeros((fleet_size, 2))
+        for v in range(fleet_size):
             if observation[v, 1] < 0.2:
-                action[v, 0] = 1.0
+                action[v, 0] = 72.1
                 action[v, 1] = 72.1
         return action
 
 
 # ------------------------------------------------------------------
-# Simple TTM (Dummy / Moving Average)
+# TTM-Enhanced Policy (Future-Aware, Same State Size)
 # ------------------------------------------------------------------
 class SimpleTTM:
-    """
-    Lightweight TTM-like predictor using moving average.
-    Can later be replaced with real Tiny Time Mixer.
-    """
+    """Lightweight TTM-like predictor using moving average."""
 
     def __init__(self, window_size=3):
         self.window_size = window_size
@@ -89,14 +85,9 @@ class SimpleTTM:
         return sum(self.history[vehicle_id]) / len(self.history[vehicle_id])
 
 
-# ------------------------------------------------------------------
-# TTM-Enhanced Policy (Future-Aware, Same State Size)
-# ------------------------------------------------------------------
 class TTMEnhancedPolicy(SchedulePolicy):
-    """
-    Uses TTM to predict future SoH and SoC.
+    """Uses TTM to predict future SoH and SoC.
     Fuses current and predicted values by averaging.
-    State dimension remains 2.
     """
 
     def __init__(self):
@@ -122,30 +113,30 @@ class TTMEnhancedPolicy(SchedulePolicy):
             pred_soh = self.ttm_soh.predict(v)
             pred_soc = self.ttm_soc.predict(v)
 
-            # Fallback if prediction not available
             if pred_soh is None:
                 pred_soh = current_soh
             if pred_soc is None:
                 pred_soc = current_soc
 
-            # Average fusion (KEY IDEA)
-            fused_soh = 0.5 * (current_soh + pred_soh)
+            # Average fusion
             fused_soc = 0.5 * (current_soc + pred_soc)
 
-            # Charging decision based on fused state
             if fused_soc < 0.2:
-                action[v, 0] = 1.0
+                action[v, 0] = 72.1
                 action[v, 1] = 72.1
 
         return action
 
 
 # ------------------------------------------------------------------
-# DNN Policy (PPO-trained)
+# DNN Policy (PPO-trained) — NO hard-coded charging mask
 # ------------------------------------------------------------------
 class DnnPolicy(SchedulePolicy):
-    """
-    PPO-trained policy loaded using Stable-Baselines3.
+    """PPO-trained policy loaded using Stable-Baselines3.
+    
+    The PPO network's output is used directly. No manual overrides
+    are applied so that PPO can learn a genuinely different strategy
+    from the baseline 80-20 rule.
     """
 
     def __init__(self, weights: str) -> None:
@@ -159,34 +150,27 @@ class DnnPolicy(SchedulePolicy):
         action = np.array(action).reshape((fleet_size, 2))
         action = np.abs(action)
 
-        # keep action within valid range
+        # Scale action[1] to charger power range (0 → max kW)
         action[:, 0] = np.clip(action[:, 0], 0.0, 1.0)
-        action[:, 1] = np.clip(action[:, 1], 0.0, 1.0)
-
-        obs = np.array(observation).reshape((fleet_size, 2))
-        charging_mask = (obs[:, 1] < 0.2) | (
-            (obs[:, 1] < 0.8)
-            & np.array([v["status"] == "CHARGING" for v in info["fleet"]])
-        )
-        action[charging_mask, 0] = 1.0
-        action[charging_mask, 1] = 1.0
+        action[:, 1] = action[:, 1] * 10.0  # match reference repo scaling
 
         return action
 
 
 # ------------------------------------------------------------------
-# Data Logger
+# Data Logger (aligned with reference repo)
 # ------------------------------------------------------------------
 class DataLogger:
-    """Logs simulator output to CSV."""
+    """Get data for plots — matches reference repo format."""
 
-    def __init__(self, logfile, fleet_size):
+    def __init__(self, logfile, fleet_size=50):
         self.fleet_size = fleet_size
         self.csvfile = open(logfile, "w")
-        header = "total_revenue,total_power,completed,"
-        header += ",".join([f"soh_{i}" for i in range(self.fleet_size)]) + ","
-        header += ",".join([f"state_{i}" for i in range(self.fleet_size)])
-        self.csvfile.write(header + "\n")
+        self.csvfile.write("profit,total_power,completed,")
+        self.csvfile.write(",".join([f"soh{i}" for i in range(self.fleet_size)]))
+        self.csvfile.write(",")
+        self.csvfile.write(",".join([f"status{i}" for i in range(self.fleet_size)]))
+        self.csvfile.write("\n")
 
         self.p_old = [72.1] * self.fleet_size
         self.retired = [0] * self.fleet_size
@@ -212,7 +196,16 @@ class DataLogger:
 
         self.p_old = p_curr
 
-        profit = info["total_revenue"]
+        # Per-step profit: sum fares from in-progress jobs
+        # (only from non-retired vehicles)
+        profit = 0
+        for j in info.get("inprogress", []):
+            vehicle_id = j.get("vehicle")
+            if vehicle_id is not None and vehicle_id < self.fleet_size:
+                if self.retired[vehicle_id] < 1:
+                    profit += j["fare"]
+            else:
+                profit += j["fare"]
 
         completed = info["completed"]
         entry = f"{profit},{total_power},{completed},"

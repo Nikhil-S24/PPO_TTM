@@ -17,11 +17,10 @@ fleet:
 
 charging stations:
   - location: 208
-    max port power: 10
+    max port power: 50
     max total power: 500
     efficiency: 0.9
     ports: 10
-    max total power: 50
   - location: 1
     max port power: 50
     max total power: 500

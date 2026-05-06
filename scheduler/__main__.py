@@ -1,6 +1,4 @@
-"""Built-in Fleet Scheduling Policies.
-These classes can be extended for future research.
-"""
+"""Fleet scheduler entry point — EVAL and TRAIN modes."""
 
 import argparse
 import yaml
@@ -16,37 +14,6 @@ from scheduler.policies import (
     DnnPolicy,
 )
 
-
-class PPORewardWrapper(gym.Wrapper):
-    """PPO-only reward shaping; does not affect baseline/TTM eval."""
-
-    def __init__(self, env):
-        super().__init__(env)
-        self.prev_completed = 0
-        self.prev_revenue = 0.0
-
-    def reset(self, **kwargs):
-        obs, info = self.env.reset(**kwargs)
-        self.prev_completed = info.get("completed", 0)
-        self.prev_revenue = info.get("total_revenue", 0.0)
-        return obs, info
-
-    def step(self, action):
-        obs, _, terminated, truncated, info = self.env.step(action)
-
-        completed = info.get("completed", 0)
-        revenue = info.get("total_revenue", 0.0)
-
-        inc_completed = completed - self.prev_completed
-        inc_revenue = revenue - self.prev_revenue
-
-        # Revenue-focused dense reward for PPO
-        reward = inc_revenue
-
-        self.prev_completed = completed
-        self.prev_revenue = revenue
-
-        return obs, reward, terminated, truncated, info
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simulate vehicle fleet")
@@ -90,11 +57,9 @@ if __name__ == "__main__":
         if args.epochs is None:
             raise ValueError("--epochs must be specified for TRAIN")
 
-        # PPO-only reward shaping wrapper (does NOT affect baseline/TTM eval path)
         env = TaxiFleetSimulator(config)
         env.reset()
 
-        # Scale training steps based on epochs
         total_steps = args.epochs * 10000
         print(f"Training PPO for {total_steps} timesteps...")
 

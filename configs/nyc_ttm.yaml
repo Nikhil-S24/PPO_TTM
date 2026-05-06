@@ -6,15 +6,15 @@ use_ttm: true
 delta t: 3600        # 1 hour per step
 
 start t: 2008/12/31 00:00:00
-end t: 2018/12/31 00:00:00   # ~5 years
+end t: 2013/12/31 00:00:00   # ~5 years
 
-max steps: 100000             # enough to cover full duration
+max steps: 50000         # enough to cover full duration
 
 # -----------------------------------
 # Environment
 # -----------------------------------
-city: data/nyc-district-map2.pkl
-demand: data/nyc-sample-demand.csv
+city: data/nyc-map.pkl
+demand: data/nyc-demand.csv
 
 # -----------------------------------
 # Fleet Configuration
@@ -30,8 +30,8 @@ fleet:
 # -----------------------------------
 charging stations:
   - location: 208
-    max port power: 10
-    max total power: 50
+    max port power: 50
+    max total power: 500
     efficiency: 0.9
     ports: 10
 

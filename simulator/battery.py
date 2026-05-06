@@ -1,9 +1,7 @@
 """Battery models."""
 
-from typing import Dict
-
-
 import math
+from typing import Dict
 
 
 class BatteryOverChargeException(Exception):
@@ -15,7 +13,7 @@ class BatteryOverChargeException(Exception):
     """
 
     def __init__(self, message: str, surplus: float) -> None:
-        super.__init__(message)
+        super().__init__(message)
         self.surplus = surplus
 
 
@@ -28,18 +26,15 @@ class BatteryEmptyException(Exception):
     """
 
     def __init__(self, message: str, deficit: float) -> None:
-        super.__init__(message)
+        super().__init__(message)
         self.deficit = deficit
 
 
 class Battery:
     """Abstract battery class.
 
-    Inheriting classes must implement the charge and discharge methods, and,
-    optionally the age method.
-
     Args:
-        capacity: battery capcity in kWh
+        capacity: battery capacity in kWh
     """
 
     def __init__(self, capacity: float) -> None:
@@ -48,15 +43,6 @@ class Battery:
         self.soc = 1
 
     def to_dict(self) -> Dict[str, float]:
-        """Return a dictionary representing the current state of the battery.
-
-        Returns:
-            {
-                initial_capacity: capacity when the battery was new,
-                actual_capacity: current capacity of the battery,
-                soc: state of charge (%),
-            }
-        """
         return {
             "initial_capacity": self.initial_capacity,
             "actual_capacity": self.actual_capacity,
@@ -64,62 +50,31 @@ class Battery:
         }
 
     def charge(self, dW: float, dt: float, T_a: float) -> None:
-        """Simulate charging the battery with <dW> kWh across <dt> seconds at
-        <T_a> degrees Celsius.
-
-        Args:
-            dW: charge energy in kWh
-            dt: charging time (seconds)
-            T_a: battery temperature (Celsius)
-
-        Raises:
-            BatteryOverChargeException
-        """
         raise NotImplemented
 
     def discharge(self, dW: float, dt: float, T_a: float) -> None:
-        """Simulate discharge of <dW> kWh across <dt> seconds at <T_a> degrees
-        Celsius.
-
-        Args:
-            dW: discharge energy in kWh
-            dt: discharge time (seconds)
-            T_a: battery temperature (Celsius)
-        Raises:
-            BatteryEmptyException
-        """
         raise NotImplemented
 
     def age(self, dt: float, T_a: float) -> None:
-        """Simulate battery aging for <dt> seconds. at <T_a> degrees Celsius."""
         raise NotImplemented
 
 
 class MultiStageBattery(Battery):
-    """This battery is affected by two types of aging:
-        Cyclic: Wan et al.
-        Calendar: ?
+    """Multi-stage battery aging model from Wan et al.
 
-    Assumptions:
-        1. Charge / discharge efficiency is 100%
-        2. No loss of SoC in storage
+    Cyclic aging due to charging and discharging.
     """
 
     def __init__(self, capacity: float) -> None:
         super().__init__(capacity)
 
     def recalculate_capacity(self, dW, dt, T_a) -> None:
-        """Under Wan et al. cyclic aging due to charging and discharging is
-        equivalent.  This method recalculates SoH and SoC for any inflow /
-        outflow of energy dW.
+        """Recalculate SoH and SoC for any inflow/outflow of energy dW.
 
         Args:
             dW - energy in (+) or out (-) in kWh
             dt - time (seconds)
-            T_a - ambient temperature in Celcius.
-
-        Raises:
-            BatteryOverChargeException, BatteryEmptyException
+            T_a - ambient temperature in Celsius.
         """
         if self.actual_capacity / self.initial_capacity > 0.933:
             alpha = 0.2172
@@ -139,21 +94,21 @@ class MultiStageBattery(Battery):
 
         DoD_ref = 1.0
         DoD_t = (self.soc * self.actual_capacity + dW) / self.actual_capacity
-        # if DoD_t < 0 or DoD_t > 1:
-        # raise Exception(f'Magnitude of delta W too large: SoC - {self.soc}; Cap. - {self.actual_capacity}; W - {delta_W}')
+
         if DoD_t <= 0:
             DoD_t = 0.0
             dW = self.actual_capacity
         if DoD_t >= 1:
             DoD_t = 1.0
             dW = (1 - self.soc) * self.actual_capacity
+
         C = self.initial_capacity
         I_ref = 0.5 * C
         I_t = dW / (dt / 3600)
         T_ref = 25
 
         if I_t <= 1e-5 and I_t >= -1e-5:
-            # In the case where the current drawn is so small, don't don anything
+            # Current drawn is negligible, skip aging
             return
 
         theta_t = abs(
@@ -161,8 +116,8 @@ class MultiStageBattery(Battery):
             * (I_t / I_ref) ** (1 / beta)
             * math.exp(-psi * (1 / T_a - 1 / T_ref))
         )
-        N_cref = 513  # Wan et al. 2024 (Good for single and multistage)
-        Q_loss = (theta_t / N_cref) * (dt / (24 * 3600))
+        N_cref = 513  # Wan et al. 2024
+        Q_loss = theta_t / N_cref
         assert Q_loss >= 0
 
         self.soc = DoD_t
@@ -172,31 +127,14 @@ class MultiStageBattery(Battery):
 
     def charge(self, dW: float, dt: float, T_a: float) -> None:
         """Simulate charging the battery with <dW> kWh across <dt> seconds at
-        <T_a> degrees Celsius.
-
-        Args:
-            dW: charge energy in kWh
-            dt: charging time (seconds)
-            T_a: battery temperature (Celsius)
-
-        Raises:
-            BatteryOverChargeException
-        """
+        <T_a> degrees Celsius."""
         self.recalculate_capacity(dW, dt, T_a)
 
     def discharge(self, dW: float, dt: float, T_a: float) -> None:
         """Simulate discharge of <dW> kWh across <dt> seconds at <T_a> degrees
-        Celsius.
-
-        Args:
-            dW: discharge energy in kWh
-            dt: discharge time (seconds)
-            T_a: battery temperature (Celsius)
-        Raises:
-            BatteryEmptyException
-        """
+        Celsius."""
         self.recalculate_capacity(-dW, dt, T_a)
 
     def age(self, dt: float, T_a: float) -> None:
-        """Simulate battery aging for <dt> seconds. at <T_a> degrees Celsius."""
+        """Simulate battery aging for <dt> seconds at <T_a> degrees Celsius."""
         return

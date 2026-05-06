@@ -1,108 +1,108 @@
-"""
-Synthetic Multi-Zone Region Map (Improved for 5-year simulation)
-"""
+"""Region map."""
 
 from typing import Dict, Tuple
 from typing_extensions import Self
-import math
 
+import pickle
 
-# ==========================================================
-# Base Classes
-# ==========================================================
 
 class Location:
+    """Abstract class representing a location in a region."""
+
     def __init__(self, region: "Region") -> None:
         self.region = region
 
     def to_dict(self) -> Dict:
-        raise NotImplementedError
+        """Represent the location as a dictionary."""
+        raise NotImplemented
 
     def to(self, location: Self) -> Tuple[float, float]:
+        """Distance to another <location> in the same map.
+
+        Returns:
+            (distance, time) in km and seconds respectively.
+        """
         return self.region.distance(self, location)
 
 
 class Region:
+    """Abstract class for a region. A region acts as a map, recording the
+    time, distance, and travel conditions between pickups, dropoffs, and
+    charging stations.
+    """
+
+    def __init__(self) -> None:
+        pass
+
     def distance(
         self, start: Location, end: Location, conditions: Dict = None
     ) -> Tuple[float, float]:
-        raise NotImplementedError
+        """Calculate the distance between <start> and <end> given <conditions>.
 
+        Args:
+            start: starting location
+            end: ending location
+            conditions: environmental conditions
 
-# ==========================================================
-# Location Object
-# ==========================================================
+        Returns:
+            (distance, time) in km and seconds respectively.
+        """
+        raise NotImplemented
+
 
 class CyclicZoneGraphLocation(Location):
+    """Location in a cyclic zone graph.
+
+    Args:
+        zone: node number within graph.
+    """
+
     def __init__(self, zone: int, region: Region) -> None:
         super().__init__(region)
         self.zone = zone
 
     def to_dict(self) -> Dict:
-        return {"zone": self.zone}
+        """Represent the location as a dictionary."""
+        return self.zone
 
     def to(self, location: Location) -> Tuple[float, float]:
+        """Distance to another <location> in the same map.
+
+        Returns:
+            (distance, time) in km and seconds respectively.
+        """
         return self.region.distance(self, location)
 
 
-# ==========================================================
-# Synthetic Multi-Zone Circular Graph
-# ==========================================================
-
 class CyclicZoneGraph(Region):
+    """Region comprised of zones connected by bidirectional edges.
+
+    Args:
+        mapfile: path to file containing map data.
+    """
+
     def __init__(self, mapfile: str) -> None:
-        print("[DEBUG] Using synthetic circular city map")
-
-        # ✅ Increased zones for realism
-        self.num_zones = 50
-
-        self.radius = 10.0  # km (larger city)
-        self.speed_kmph = 30.0  # default speed
-
-        # Generate circular coordinates
-        self.coordinates = {}
-
-        for i in range(self.num_zones):
-            angle = 2 * math.pi * i / self.num_zones
-            x = self.radius * math.cos(angle)
-            y = self.radius * math.sin(angle)
-            self.coordinates[i] = (x, y)
-
-        # Map structure
-        self.map = {i: {} for i in range(self.num_zones)}
-
-    # ------------------------------------------------------
+        super().__init__()
+        with open(mapfile, "rb") as pklfile:
+            self.map = pickle.loads(pklfile.read())
 
     def distance(
         self, start: Location, end: Location, conditions: Dict = None
-    ) -> Tuple[float, float]:
+    ) -> float:
+        """Calculate the distance between <start> and <end> given <conditions>.
 
-        z1 = start.zone % self.num_zones
-        z2 = end.zone % self.num_zones
+        Args:
+            start: starting location
+            end: ending location
+            conditions: environmental conditions
 
-        x1, y1 = self.coordinates[z1]
-        x2, y2 = self.coordinates[z2]
-
-        # Euclidean distance
-        dist = math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
-
-        # --------------------------------------------------
-        # Traffic-aware speed
-        # --------------------------------------------------
-        if conditions and "hour" in conditions:
-            hour = conditions["hour"]
-
-            if 7 <= hour <= 10 or 17 <= hour <= 20:
-                speed = 20.0   # rush hour (slow)
-            elif 0 <= hour <= 5:
-                speed = 40.0   # night (fast)
-            else:
-                speed = 30.0   # normal
-        else:
-            speed = self.speed_kmph
-
-        # Convert to time
-        time_hours = dist / speed
-        time_seconds = time_hours * 3600
-
-        return (dist, time_seconds)
+        Returns:
+            (distance, time) in km and seconds respectively.
+        """
+        try:
+            return (
+                self.map[start.zone][end.zone]["distance"],
+                self.map[start.zone][end.zone]["time"],
+            )
+        except KeyError:
+            return (float("inf"), float("inf"))

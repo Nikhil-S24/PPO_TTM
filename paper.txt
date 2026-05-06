@@ -1,0 +1,755 @@
+Managing Charging Induced Grid Stress and
+Battery Degradation in Electric Taxi Fleets
+Michael Yuhas∗, Rajesh K. Ahir ∗, Laksamana Vixell Tanjaya Hartono †, Muhammad Dzaki Dwi Putranto †,
+Arvind Easwaran ‡∗ Suhono Harso Supangkat †
+∗Energy Research Institute, Nanyang Technological University, Singapore
+{michael.yuhas, rajeshkumar.ahir, arvinde}@ntu.edu.sg
+†School of Electrical Engineering and Informatics, Institut Teknologi Bandung, Bandung, Indonesia,
+{23524067, dzaki.dwi, suhono}@itb.ac.id
+‡College of Computing and Data Science, Nanyang Technological University, Singapore
+Abstract—Operating fleets of electric vehicles (EVs) introduces
+several challenges, some of which are borne by the fleet operator,
+and some of which are borne by the power grid. To maximize
+short-term profit a fleet operator could always charge EVs at
+the maximum rate to ensure vehicles are ready to service ride
+demand. However, due to the stochastic nature of electricity
+demand, charging EVs at their maximum rate may potentially in-
+crease the grid stress and lead to overall instability. Furthermore,
+high-rate charging of EVs can accelerate battery degradation,
+thereby reducing the service lifespan of the fleet. This study aims
+to reconcile the conflicting incentives of fleet longevity, short-
+term profitability, and grid stability by simulating a taxi fleet
+throughout its lifespan in relation to its charging policies and
+service conditions. We develop an EV fleet simulator to evaluate
+the battery degradation due to unpredictable charging and ride
+demand. Consequently, the impact on the power grid through the
+charging infrastructure is assessed due to these activities. This
+simulation utilizes publicly accessible real-world travel data from
+the NYC taxi dataset. We compare a baseline 80-20 fleet charging
+policy with a reinforcement learning-based policy designed to
+prolong the fleet’s service life and alleviate grid stress. We
+monitor grid stress, battery degradation, and profitability over
+five years and find that our learned policy outperforms the
+baseline. This simulator enables fleet operators to assess the
+impact of different charging policies on these indicators to make
+informed decisions in the future.
+Index Terms—battery degradation, charge scheduling, electric
+vehicles (EV), EV fleets, power grid
+I. INTRODUCTION
+Electric vehicles (EVs) comprise a growing portion of taxi
+fleets, particularly in developing economies where charging
+infrastructure and grid development may not match the pace
+of deployment. For instance, in Indonesia, BlueBird, a major
+EV fleet taxi operator, plans to deploy more than 1000 EVs
+in Jakarta by 2025 to replace the fossil fuel-based taxis [1].
+Although the country as a whole faces an oversupply of
+electricity, localized constraints such as last-mile charging
+infrastructure remain a significant barrier [2]. At the same
+time, the daily demand for rides far exceeds the capacity of
+the current EV taxi fleets [3], while the absence of dynamic
+The research is funded by the Indonesian Endowment Fund for Education
+(LPDP) on behalf of the Ministry of Education, Culture, Research, and
+Technology of the Republic of Indonesia and managed by Institut Teknologi
+Bandung under the INSPIRASI Program (Contract No. 2963/E3/AL.04/2024
+and 314/IT1.B07/KS.00/2024).
+pricing in the Indonesian grid [4] means that the challenge
+for fleet operators is not to minimize charging costs. Instead,
+the central issue lies in scheduling charging operations so that
+taxis are available to meet demand in both time and location,
+without overloading local grid capacity at charging points or
+accelerating EV battery degradation.
+To address this challenge, we consider three holistic in-
+dicators: grid stress, battery degradation, and fleet revenue
+(profitability). We consider grid stress as the instantaneous
+power demand to charge the fleet at any point in time. Battery
+degradation is the reduction in a batteries peak capacity over
+time, also referred to as state of health (SoH) [5]. We consider
+fleet revenue only from servicing ride demand and ignore other
+operational costs such as the price of electricity (constant in
+the Indonesian context) and fixed costs. These three indicators
+have a complex relationship where maximizing one may
+adversely affect the others. For example, while charging the
+EVs at a faster rate and to maximum capacity helps maximize
+the short-term profitability of the fleet, it expedites the battery
+deterioration process as well. Over time, this deterioration
+reduces the fleet’s ability to meet demand, leaving portions of
+demand unserviceable, leading to a reduction in profitability.
+Charging rates affect availability – the ability of fleet vehicles
+to service demand when it arrives [6] – by affecting battery
+aging [7]. However, charging rates are influenced in turn by
+localized grid conditions [8], as well as the number of vehicles
+and their locations relative to charging stations at any given
+time [9].
+There is no closed form solution to model these three
+interacting indicators over the long horizon. Fig. 1 illustrates
+the relationships between some of the external factors affecting
+fleet performance over time. Environmental conditions impact
+the grid and charging infrastructure as well as the efficiency
+of the EVs themselves [10], and ride demand varies based on
+date, time of day, and weather conditions [11]. A charge sched-
+uler that tells EVs where, when, and how fast to charge needs
+to take all these factors into account in addition to the current
+location, state of charge (SoC), and SoH of each vehicle in the
+fleet. The decisions made by the charge scheduler then go on
+to impact future fleet states, which impact future scheduling
+decisions. Ultimately, this impacts performance with respect
+arXiv:2510.19293v1  [eess.SY]  22 Oct 2025
+
+Fig. 1. A charge scheduler must decide where, when, and at what rate
+vehicles charge based on grid conditions, charger availability, ride demand,
+fleet location and health, and environmental conditions. Orange lines indicate
+the set of options the charge scheduler has for the selected vehicle.
+to the three aforementioned indicators.
+To optimize these indicators in the face of such a complex
+relationship, we propose a simulation-based approach that will
+allow us to model different charge scheduling policies in
+the context of ride demand, long term battery degradation,
+and grid/infrastructure constraints. Existing works have sim-
+ulated battery aging [12], charge scheduling [13], and fleet
+dispatch [14] independently, but to our knowledge, this is the
+first work that combines all three into one simulator. We then
+use this simulator to evaluate a widely used baseline charging
+policy based on the 80-20 charging rule [15]. In addition,
+we use the simulator to train a simple reinforcement learning
+solution that outperforms the baseline in terms of grid stress,
+lifetime revenue, and battery degradation. In summary, the
+novelty of this work is threefold:
+1) We use long term profitability, grid stress, and battery
+health to assess EV fleet charge scheduling policies over
+a multi-year horizon.
+2) We develop a simulator that combines demand mod-
+elling, charging infrastructure, and battery health to
+provide the in-depth assessment.
+3) We use the simulator to examine a simple reinforce-
+ment learning-based charging policy that outperforms a
+widely used baseline.
+II. RELATEDWORK
+Charge scheduling, battery degradation, and fleet dynamics
+have all been explored independently in previous literature and
+various tools and datasets exist that address these problems in
+isolation. We leverage some of these previous approaches to
+solve the more complex, integrated problem. Table I summa-
+rizes the capabilities of existing simulators and demonstrates
+the gap filled by this work.
+A. Charge Scheduling
+The infrastructure required to charge EVs is not only
+constrained by the number of ports available for simultaneous
+EV charging, but the total amount of power that can be
+TABLE I
+CAPABILITY COMPARISON AMONG SIMULATORS. VEHICLE OPS.REFERS
+TO COSTS INCURRED SERVICING DEMAND,WHILE VEHICLE ROUTING
+REFERS TO THE ABILITY TO EVALUATE DIFFERENT PATHS IN SIMULATION.
+Simulator Charging
+Rate
+Battery
+Deg.
+Vehicle
+Ops.
+Vehicle
+Routing
+ACN-Sim [13] ✓ ✗ ✗ ✗
+BREVO [10] ✗ ✓ ✓ ✗
+Yao et al. [12] ✓ ✓ ✓ ✗
+TaxiSim [22] ✗ ✗ ✗ ✓
+Bischoff et al. [23] ✓ ✗ ✗ ✓
+Zhang et al. [14] ✗ ✗ ✓ ✓
+FleetRL [24] ✓ ✓ ✓ ✗
+Ours ✓ ✓ ✓ ✓
+drawn by a single charging station. Such a constraint could
+come from the physical size of the on-site transformer or
+due to grid status at a certain time. Lee et al. investigated
+such constraints by proposing an adaptive charge network
+simulator [13], which simulates a network of chargers with
+vehicles arriving randomly and then built upon this to mini-
+mize the makespan of a set of charging vehicles [9]. However,
+the current simulator does not model the effect of charging
+decisions on future vehicle arrivals. For example, in a taxi
+fleet, terminating a vehicle’s charging session at a certain time
+releases it to service demand, which when coupled with task
+arrivals, influences when the vehicle will return to charge.
+Additionally, several efforts have been made to consider the
+possibility of EVs supplying the grid during peak loading
+hours [16] or vehicle-to-vehicle charge scheduling within a
+station [17].
+B. Battery Degradation
+Battery degradation comes from two sources. One is calen-
+dar aging, where a battery degrades over time as a function of
+its SoC [18]. The other is thermal aging, which occurs every
+time a battery is charged or discharged [19]. Many degradation
+models have been proposed for lithium-ion batteries [20], but
+we will focus on the recent multi-stage degradation model
+where the rate of degradation varies depending on the cur-
+rent state of health [21]. Previous studies have developed
+simulators for long-term battery degradation in EVs. The
+authors have considered driving conditions and holistically
+modelled the effect of temperature, number of passengers,
+and road conditions on a vehicle’s energy expenditure [10].
+Yao et al. also modelled battery degradation in a taxi fleet
+and considered operational costs such as charging and parking
+over the long term [12]. However, this simulator overlooked
+the vehicle’s distance to ride demands and grid constraints
+beyond a charger’s rated capacity.
+C. Fleet Simulation
+Unlike [13] and [12], this study considers where and how
+long vehicles must travel before and after charging. TaxiSim
+models fleet vehicles as agents with a finite number of states
+and user-defined ride demand service policies but does not
+consider charging or grid conditions [22]. TaxiSim requires
+real-world demand data to simulate demand requests (every
+
+Charging Network
+Scheduler
+SimulatorFleet State
+Grid State
+Ride Demand
+Charging Times
+Charging Rates
+Grid Model
+($/kWh @ t)
+Station 1
+Demand Servicing
+Job 1
+Demand ModelTraffic Model
+Vehicle Pool
+Station 2
+Station S
+Job 2
+Job J
+Veh. 1 Veh. 2
+Veh. 3 Veh. 4
+Veh. 5 Veh. V
+Fig. 2. High level block diagram of our simulator. Vehicles are persistent
+software objects that can be assigned to charge, service demand, or idle by
+the scheduler.
+time a customer hails a ride). This can be provided by real-
+world datasets such as the New York City Taxi Dataset [25]
+and the City of Chicago Taxi Rides Dataset [26]. Bischoff
+et al. developed a simulator for EV taxi fleets, but it did
+not consider long-term degradation or dynamic grid condi-
+tions [23]. Recently, Zhang et al. also developed an EV taxi
+fleet simulator with a focus on mapping taxis to rides and
+chargers [14], but their work overlooked battery health or
+the ability to schedule different charging rates. Cording et al.
+developed FleetRL to train reinforcement learning models for
+EV charging optimization, but this simulator does not consider
+the path vehicles travel after they are released from the charger
+to serve demand [24].
+III. LONGHORIZONMODELING OFELECTRICTAXI
+FLEETS WITH ASIMULATOR
+This section describes how the proposed simulator models
+electric taxi fleets over the long horizon and how to evaluate
+performance across the fleet’s life. Table II provides a list of
+the notation used. Fig. 2 shows a high-level block diagram
+of the proposed simulator. The vehicle pool is a static list of
+persistent vehicle objects, each of which maintains its own
+state. A demand model generates jobs (ride requests) which
+must be assigned to a vehicle and cost a certain amount of
+time and energy to complete. The completion time of a job
+is dependent on traffic conditions, which also influence the
+time and energy required for a vehicle to reach a charging
+station. Vehicles can also be assigned to chargers to replenish
+SoC, with the maximum charging rate dependent on the grid
+state. The simulator recalculates the internal state of each of
+its components at discrete points in time. At each timetthe
+state is communicated to a scheduler, which returns a list of
+vehicle assignments to ride demand and chargers, as well as
+their charging rates. The scheduler must take into account the
+current grid state so that charging several vehicles at once does
+not overstress the power system.
+A. Vehicle Pool
+We consider a fleetVwith individual vehicles represented as
+v∈ V. All vehicles have a state which respects the transition
+rules in Fig. 3(a): onlyIDLEvehicles can be assigned to charge
+TABLE II
+TABLE OFSIMULATORNOTATION
+Symbol Notation
+VSet of vehicles in a taxi fleet.
+vj /vp vehicle assigned to jobjor charge portp.
+Qv(t)State of charge in vehiclev’s battery at timet.
+¯Qv(t)State of health of vehiclev’s battery at timet.
+∆Qv(t)Loss in capacity ofv’s battery on the interval[t−1, t).
+Ncref Reference number of charge cycles to battery end-of-life.
+α, β, ψHealth dependent battery parameters.
+Cv(t)C-rate used to charge or dischargev’s battery on[t−1, t).
+Tref Reference temperature (25°C).
+Tv(t)Temperature on vehiclev’s battery at timet.
+ηv Vehiclev’s efficiency in charge per kilometer.
+JSet of jobs (ride-demand).
+rj Arrival time of jobj.
+lpu,j /ldo,j /ls Location of pick-up/drop-off for jobjor charge stations.
+σj state of jobj
+SSet of charging stations.
+PSet of ports comprising a charging station.
+¯Ps/ ¯Pp Maximum power supported by stationsor portp.
+Pp(t)Output power of portpon the interval[t−1, t).
+ηs Efficiency of charging stations.
+or service demand, and the travel times to chargers or pick-up
+locations are tracked in separate states. If a vehicle does not
+have sufficient charge to complete its travel to its destination,
+it enters theRECOVERYstate. This state indicates the vehicle
+cannot travel for the next 24 hours after which it is moved to
+its assigned depo in theIDLEstate with full charge. At any
+timet, the SoC of a vehicle’s battery is represented byQ v(t).
+Additionally, every vehicle’s battery has a state of health
+represented by ¯Qv(t), i.e., the maximum amount of charge that
+the battery could possibly contain att. BothQ v(t)and ¯Qv(t)
+are given in units of energy (kWh). Over the lifespan of the
+vehicle, ¯Qv(t)decreases due to calendar aging and thermal
+aging, however, since all vehicles in the fleet will undergo
+calendar aging at roughly the same rate, we only consider
+degradation due to thermal aging for now [21]. Furthermore,
+empirical results show that when a battery’s SoC is cycled
+continuously, thermal aging dominates calendar aging [27],
+which is the case in our experiments where vehicle idle times
+are small. The multi-stage battery degradation model proposed
+by Wan et al. [21] calculates a capacity loss over the battery’s
+life on the interval[0, t). We adapt this model to work with
+our tick-based simulator, by calculating a discrete capacity
+loss∆Q v(t)on every interval[t−1, t). The expression for
+∆Qv(t)is given in eq. 1 whereN cref = 513is the number
+of cycles to end-of-life under a reference cycle condition,α
+andβare stage dependent parameters,ψis the Arrhenius rate
+constant,C v(t)is the C-rate [7] used to charge or discharge a
+vehicle’s battery on the interval[t−1, t),T ref is the reference
+temperature (25°C), andT v(t)is the temperature of vehicle
+v’s battery at timet.
+∆Qv(t) = 1
+Ncref
+×
+
+1− Qv(t)
+¯Qv(t)
+−1/α
+×
+2Cv(t)
+∆t
+−1/β
+×exp
+
+−ψ
+  1
+Tv(t) − 1
+Tref
+
+(1)
+
+TABLE III
+MULTI-STAGE BATTERY DEGRADATION PARAMETERS MEASURED BY
+PREGER ET AL. [5]. SOHINDICATES THE RATIO ¯Qv(t)/ ¯Qv(0).
+Stage SoHα β ψ
+1 100%−93.3%0.2171 24.2535 -12.0051
+2 93.3%−86.6%0.2652 9.9653 -29.0049
+3 86.6%−0%0.2611 -15.1963 -22.5247
+The stage dependent parameters are listed in Table III with
+SoH representing a percentage of the battery’s initial capacity
+¯Qv(t)/ ¯Qv(0)[5]. Thus, at any timet, the maximum charge
+vehiclev’s battery can store is given by eq. 2.
+¯Qv(t) = ¯Qv(t−1)−∆ ¯Qv(t)(2)
+Using the C-rate, we can also calculate the actual charge in
+a vehicle’s battery attusing eq. 3. Here,∆tis the simulator
+tick length, which can be decreased to improve simulation
+accuracy or increased to improve modelling efficiency.
+Qv(t) =Q v(t−1) +C v(t)∆t(3)
+C-rate during charging time intervals is determined by the
+charge schedule, while C-rate during service intervals is cal-
+culated by multiplying the distance covered by the vehicle by
+an efficiency factorη v, which describes the amount of charge
+needed to cover a given distance for a specific vehicle type.
+B. Traffic Model
+Calculating the precise distance and time a vehicle needs
+to travel between specific points for every journey would
+be intractable across a multi-year simulation. To solve this
+problem, we divide the region in which a fleet operates into a
+discrete number of zones and precalculate the travel time and
+distance between each zone. The traffic model can be thought
+of as a functionf(l start, lend) :N×N→R 2
++ where time
+and distance can be any positive real number. This works well
+with existing ride demand datasets that divide urban areas into
+zones, even when precise pick-up and drop-off coordinates are
+provided [25], [26]. In this work, we iterate through the New
+York Taxi Dataset and use a kernel density estimate [28] to
+learn the distribution of travel times and distances between
+and within zones. These distributions can be conditioned on
+time of day, day of the week, or season to more accurately
+model travel cost. We found that for the New York Taxi
+Dataset, not all zones are directly connected (i.e., in a one-
+year period, no passengers made any trips between certain
+zones). To model this sparse connectivity, we compute the
+least expected time path [29] between unconnected zones and,
+calculate a distance and time distribution assuming this path
+of travel is used. During simulation, when a vehicle moves
+between zones, these distributions are sampled to calculate
+required travel time and energy consumption as a function of
+a vehicle’s energy efficiency and distance.
+C. Demand Model
+Jobs are simulated by iterating through entries in a real-
+world taxi dataset (e.g. [25]) in order of pick-up time. In the
+IDLE
+CHARGING
+SERVICE
+TO CHARGE
+TO PICKUP
+RECOVERY
+(a) Vehicle State Diagram.
+ARRIVED
+IN 
+PROGRESS
+FAIL
+ASSIGNED
+REJECTED
+COMPLETE
+(b) Job State Diagram.
+Fig. 3. State diagrams of simulator entities
+simulator, each jobjis given as a tuple⟨r j, lpu,j, ldo,j, σj, vj⟩
+wherer j is the release time of the job,l pu,j is the pickup
+location,l do,j is the drop-off location,σ j is the job state, and
+vj is the vehicle currently assigned to the job. The state of
+each job evolves according to Fig 3(b). Upon creation, the job
+enters theARRIVEDstate, after which it can beREJECTED
+orASSIGNED. Rejection occurs automatically if a job stays
+in theARRIVEDstate too long (1 hour in our experiments).
+ASSIGNEDmeans that a vehicle has been dispatched to service
+the demand andIN PROGRESSindicates the passenger has been
+picked up. The job completes after the vehicle reaches the
+drop-off location as indicated by the dataset. A job canFAIL
+if the vehicle’s SoC drops to0at any point before completion.
+D. Grid and Charging Model
+The simulator considers a set of charging stationsSwhere
+eachs∈ Sis given by the tuple⟨l s, ¯Ps, ηs,P s⟩.l s is the zone
+in which the station is located, ¯Ps is the maximum power that
+can be supplied by the station (which can be less than sum
+of the maximum power output of all ports),η s is the station’s
+charging efficiency, andP s is the set of ports. Eachp∈ P s
+is given by the tuple⟨v p, Pp(t), ¯Pp⟩wherev p is the vehicle
+assigned to charge at that port,P p(t)is the power delivered
+by that port on the interval[t−1, t), and ¯Pp is the port’s
+maximum output power.
+E. Scheduler
+At every discrete timet, the scheduler receivesV,S, and
+J(the set of all jobs released up tot) from the simulator.
+A valid schedule consists of a set of instructions for each
+v∈ V. Vehicles can either be assigned a job, a charger, or left
+to idle. The simulator validates each received schedule and
+tracks the progress of vehicles toward their new assignments.
+Old assignments can be overwritten by the scheduler at future
+time instances (e.g., in the case new ride demand arrives).
+IV. CHARGESCHEDULING WITHREINFORCEMENT
+LEARNING
+We formulate the charge scheduling problem as an opti-
+mization problem with respect to the three indicators men-
+
+tioned in the introduction: grid stress, battery degradation, and
+profitability over a finite time windowt min ≤t < t max.
+The maximization problem is illustrated in expression (4).
+The decision variable isC v(t), the charge rate allocated
+to any vehicle at a given time. Note that if the scheduler
+allocates a charge rate to a vehicle not currently charging,
+the simulator enforces the travel time to the nearest station
+before charging begins. The first term addresses profitability
+by attempting to maximize the number of jobs that have
+entered theCOMPLETEstate beforet max. The second term
+addresses battery degradation by subtracting the total change
+in battery capacity of the fleet over the interval and multiplying
+weighting it by hyperparameterλ. Finally, to address grid
+stress, we introduce a constraint where the total power that
+can be drawn by the entire fleet at any timeton the interval
+must be less than hyperparameterδ.
+max
+Cv(t)
+X
+j∈J
+1 σj =COMPLETE −λ
+X
+v∈V
+¯Qv(tmin)− ¯Qv(tmax)
+s.t.
+X
+s∈S
+X
+p∈Ps
+Pp(t)< δ∀t min ≤t < t max (4)
+We use Lagrangian multipliers to transform the maximization
+problem in (4) into the reward function for a reinforcement
+learning algorithm [30]. Since we have a continuous action
+space, we select proximal policy optimization reinforcement
+learning (PPO-RL) [31] to train a policy neural network
+that outputs a charge schedule at every timetgiven the
+simulator state. Since we only address charge scheduling and
+not vehicle routing, we assume a fixed routing policy where
+vehicles requested to charge immediately stop their current
+task and begin traveling to the closest charger. Likewise,
+vehicles which are not charging are dispatched to service the
+closest ride demand, if available. For training, we setλ= 100,
+δ= 500kW, and train in Stable Baselines3 [32] for 1e4 steps
+with episode lengths168and∆t= 1hour. The policy network
+has2× |V|input neurons (SoH and SoC for each vehicle at
+t) and two intermediate layers of64neurons each. The output
+layer is also2×|V|neurons with one output per vehicle giving
+a binary charge decision and the other giving the desired rate.
+The neurons that determine whether to charge are bounded
+between0and1with a decision threshold at0.5, whereas the
+charge rate outputs are lower-bounded by0and upper-bounded
+by a vehicle’s maximum allowable charge rate.
+V. EXPERIMENTS
+All code for our experiments has been made open source 1.
+We compare our PPO-RL strategy with a baseline where fleet
+vehicles do not charge until they reach 20% battery capacity
+and then charge at the maximum rate to 80% [15]. Similar to
+PPO-RL, jobs are automatically assigned to the closest vehicle
+not currently charging, and vehicles are assigned to chargers
+based on their proximity. Both policies were evaluated on a
+fleet of 50 taxis in New York City with 2 charging stations of
+10 ports each and 50 kW max. charging power per port. We
+1https://github.com/sccicitb/simulasi-pengisian-taksi-listrik
+TABLE IV
+EXPERIMENT PARAMETERS. ALL VEHICLES IN THE FLEET AND ALL
+CHARGING STATIONS ARE IDENTICAL EXCEPT FOR LOCATIONS.
+Parameter Value
+|V|50 vehicles
+¯Qv(0)71.7 kWh
+ηv 17.1 kWh per 100 km
+ls {1,208}
+|Ps|10 ports per station
+¯Ps 500 kW
+ηs 0.9 (90%)
+¯Pp 50 kW
+∆t1 hour
+tmax 5 years
+used performance stats from the BYD e6 [33] to generate num-
+bers for taxi battery capacity and efficiency. We simulated this
+fleet for a period of 5 years to monitor the grid stress, battery
+health, and profitability under the two charging policies. The
+parameters used for this experiment are detailed in Table IV.
+We place one charging station at Newark Airport (zone 1) and
+another in the Bronx (zone 208), outside of lower Manhattan,
+as it would be costly for a fleet operator to establish charging
+infrastructure in the downtown area.
+A. Evaluation
+Fig. 4 shows the SoH of both fleets over the 5 year period.
+The shaded areas represent the interquartile range (IQR) of
+SoH across all vehicles and the solid line indicates the median
+SoH. As expected, the SoH decays slower in the PPO-RL
+fleet. We note that the decay is relatively linear for the first
+3.5 years under the baseline (4 years under PPO-RL). After
+this, the batteries begin a period of rapid degradation with
+almost all vehicles under 80% SoH by the end of the5 th
+year under the baselinem, whereas the upper75 th percentile
+of vehicles is just approaching80%SoH under PPO-RL. We
+mention80%SoH, because other works have suggested that
+vehicles should be taken out of service when SoH falls below
+this value [21]. In Fig. 5 we calculate cumulative revenue
+across the 5 years (based on fares reported in the New York
+Taxi Dataset) under both policies when vehicles crossing the
+80%SoH threshold are removed from the simulation. Due to
+the decrease in suitable vehicles, the revenue returned by the
+baseline fleet tapers off after 4 years, whereas under PPO-
+RL it continues to accumulate at roughly the same rate. This
+means the baseline charging policy is more profitable for the
+first4.5years, but beyond that, PPO-RL is better.
+Finally, we evaluate grid stress by plotting the hourly total
+charging power consumed by the fleet over a typical week in
+Fig. 6. Under the baseline policy, individual vehicles coming
+to charge cause large spike in electricity demand, and these
+can exceed 200 kW when multiple charging sessions overlap.
+With PPO-RL, the charging sessions are spread out over time,
+leading to less stress on the grid.
+B. Cross-Environment Evaluation
+We also want to check if our learned policy generalizes well
+to other cities. The City of Chicago Taxi Rides Dataset [26]
+
+Fig. 4. SoH across five years for simulated fleets charging with the baseline
+and PPO-RL charging policies. The shaded area indicates the IQR across all
+vehicles in the fleet.
+Fig. 5. Cumulative revenue of a fleet charging under the baseline and the
+PPO-RL policies over 5 years. PPO-RL maximizes revenue in the long run.
+structures ridership data similar to the New York Taxi Dataset,
+so we compare the performance of the policy trained in
+New York and applied in Chicago to the baseline policy. We
+consider the same number of vehicles and move the charging
+stations to O’Hare Airport and Hegewisch to mimic the setup
+in New York. The results for state of health and cumulative
+revenue are plotted in Fig. 7. First, we observe that for both
+policies the mean state of health after five years is higher than
+in New York City (85% compared to 80% and 75% for PPO-
+RL and the baseline respectively). We believe this is due to
+the lower ride demand in Chicago, which means each vehicle
+serves fewer rides over its lifespan. Once again, the PPO-RL
+Fig. 6. Total fleet charging power drawn from the grid over a typical week
+under the baseline and PPO-RL charging policies. The baseline has a higher
+peak power when multiple vehicles’ charging times align.
+Fig. 7. Evaluation of a fleet trained on New York demand data but operating
+in Chicago. Left: SoH across five years; the shaded area indicates the IQR
+across all vehicles in the fleet. Right: Cumulative revenue of a fleet charging
+under the baseline and the PPO-RL policies.
+Fig. 8. Distribution of instantaneous electric power consumption under the
+baseline and PPO-RL policies across the entire the entire five year life of the
+fleet in the New York and Chicago regions.
+outperforms the baseline in terms of mean battery health at
+the end of the five-year period. We also observe that the PPO-
+RL model now achieves a higher cumulative profit across the
+entire life of the fleet. We believe that with fewer available
+rides, PPO-RL is more likely to have some partially charged
+vehicles ready to service demand at any give time. We note
+that the discrepancy in results between New York and Chicago
+indicates that more work is needed regarding the generalization
+of learned policies. Finally, in Fig. 8 we compare the distri-
+bution of grid power required by PPO-RL and the baseline;
+both perform comparably with clear distribution modes when
+multiple vehicles charge simultaneously.
+VI. CONCLUSION
+Charge scheduling in EV taxi fleets is a complex problem.
+Deciding where and when EVs should charge impacts the
+fleet’s ability to service demand, the future health of the
+fleet’s batteries, and imposes a certain amount of stress on the
+grid. We proposed combining these aspects: ride demand, grid
+conditions, charging infrastructure, and battery degradation,
+into one simulator to better evaluate and develop charge
+scheduling policies. To demonstrate the utility of this simula-
+tor, we assumed a simple routing policy for vehicle-to-ride and
+vehicle-to-charger allocation and used reinforcement learning
+to train a charging policy that balanced profitability, battery
+health, and grid stress. While our training method was simple,
+the improvement over a baseline policy typically employed
+
+in EV taxi fleets showed that charge scheduling has a great
+potential to improve fleet operations.
+We plan to develop this simulator further to better model
+technologies like vehicle-to-grid, and demand response. Addi-
+tionally, we would like to develop more complex behavior
+models for passengers and drivers (e.g., a charge schedule
+may need to be adapted to individual driving styles) as well
+as modeling charging station and vehicle downtime due to
+maintenance. We encourage community contributions in these
+areas and others which may be of academic or industrial
+interest. We would also like to develop robust charging policies
+that are explainable and reliable in the face of unpredictable
+environmental conditions. This simulator can help with such
+what-if analyses and we hope that in the future it can serve as
+the basis of a digital twin for real-world electric taxi fleets.
+REFERENCES
+[1] C. Rusli, “Blue bird shifting into high gear,” Mirae Asset
+Sekuritas Indonesia, Jakarta, Indonesia, Sep. 2024. [Online]. Available:
+https://cdn.miraeasset.co.id/web-research/uploads/240930 (Mirae Asset
+Sekuritas Indonesia) BIRD Initiation 1727656726688.pdf
+[2] M. Syaharani, “Oversupply listrik jawa-bali masih 4 gw, diupayakan
+selesai 2026,” Katadata, Jakarta, Indonesia, Jan. 2024. [Online]. Avail-
+able: https://katadata.co.id/berita/energi/65a8d353a23d8/oversupply-
+listrik-jawa-bali-masih-4-gw-diupayakan-selesai-2026
+[3] B. B. P. Sari, “Ranking macet jakarta turun, dishub: Peran masyarakat
+pakai angkutan umum,” Detik News, Jakarta, Indonesia, Jan. 2025.
+[Online]. Available: https://news.detik.com/berita/d-7734016/ranking-
+macet-jakarta-turun-dishub-peran-masyarakat-pakai-angkutan-umum
+[4] “Latest electricity base tariff april 2025 subsidized and non-subsidized
+important to know, here’s the update,” Kapan Lagi, Jakarta, Indonesia,
+Apr. 2025. [Online]. Available: https://en.kapanlagi.com/plus/latest-
+electricity-base-tariff-april-2025-subsidized-and-non-subsidized-
+important-to-know-heres-the-update.html
+[5] Y . Preger, H. M. Barkholtz, A. Fresquez, D. L. Campbell, B. W. Juba,
+J. Rom `an-Kustas, S. R. Ferreira, and B. Chalamala, “Degradation of
+commercial lithium-ion cells as a function of chemistry and cycling
+conditions,”Journal of The Electrochemical Society, vol. 167, no. 12,
+p. 120532, sep 2020.
+[6] A. Abdi and S. Taghipour, “A bayesian networks approach to fleet
+availability analysis considering managerial and complex causal factors,”
+European Journal of Industrial Engineering, vol. 14, no. 3, pp. 404–442,
+2020.
+[7] A. Khan, I. H. Naqvi, and N. U. Hassan, “Exploring battery degradation
+and range variability in electric vehicles across global drive patterns and
+charging levels,” in2023 IEEE PES Innovative Smart Grid Technologies
+- Asia (ISGT Asia), Nov 2023, pp. 1–5.
+[8] Y . Yuan, L. Jiao, K. Zhu, and L. Zhang, “Scheduling online ev
+charging demand response via v2v auctions and local generation,”IEEE
+Transactions on Intelligent Transportation Systems, vol. 23, no. 8, pp.
+11 436–11 452, Aug 2022.
+[9] Z. J. Lee, G. Lee, T. Lee, C. Jin, R. Lee, Z. Low, D. Chang, C. Ortega,
+and S. H. Low, “Adaptive charging networks: A framework for smart
+electric vehicle charging,”IEEE Transactions on Smart Grid, vol. 12,
+no. 5, pp. 4339–4350, 2021.
+[10] S. Ou, “Estimate long-term impact on battery degradation by considering
+electric vehicle real-world end-use factors,”Journal of Power Sources,
+vol. 573, p. 233133, 2023.
+[11] S. Lepage and C. Morency, “Impact of weather, activities, and service
+disruptions on transportation demand,”Transportation Research Record,
+vol. 2675, no. 1, pp. 294–304, 2021.
+[12] J. Yao and F. You, “Simulation-based optimization framework for
+economic operations of autonomous electric taxicab considering battery
+aging,”Applied Energy, vol. 279, p. 115721, 2020.
+[13] Z. Lee, D. Johansson, and S. H. Low, “Acn-sim: An open-source simu-
+lator for data-driven electric vehicle charging research,” inProceedings
+of the Tenth ACM International Conference on Future Energy Systems,
+ser. e-Energy ’19. New York, NY , USA: Association for Computing
+Machinery, 2019, p. 411–412.
+[14] C. Zhang and S. Varma, “A simulation framework for ride-hailing with
+electric vehicles,” 2024,arXiv:2411.19471.
+[15] D. M. Davies, M. G. Verde, O. Mnyshenko, Y . R. Chen, R. Rajeev, Y . S.
+Meng, and G. Elliott, “Combined economic and technological evaluation
+of battery energy storage for grid applications,”Nature Energy, vol. 4,
+no. 1, pp. 2058–7546, 2019.
+[16] J. C. Mukherjee and A. Gupta, “A review of charge scheduling of electric
+vehicles in smart grid,”IEEE Systems Journal, vol. 9, no. 4, pp. 1541–
+1553, Dec 2015.
+[17] M. Dan and A. Easwaran, “A cooperative bargaining game framework
+for vehicle-to-vehicle energy sharing and trading at charging stations,” in
+2024 IEEE 27th International Conference on Intelligent Transportation
+Systems (ITSC), Sep. 2024, pp. 96–103.
+[18] P. Keil, S. F. Schuster, J. Wilhelm, J. Travi, A. Hauser, R. C. Karl,
+and A. Jossen, “Calendar aging of lithium-ion batteries,”Journal of The
+Electrochemical Society, vol. 163, no. 9, p. A1872, jul 2016.
+[19] H. E. Perez, X. Hu, S. Dey, and S. J. Moura, “Optimal charging
+of li-ion batteries with coupled electro-thermal-aging dynamics,”IEEE
+Transactions on Vehicular Technology, vol. 66, no. 9, pp. 7761–7770,
+Sep. 2017.
+[20] M. Elmahallawy, T. Elfouly, A. Alouani, and A. M. Massoud, “A
+comprehensive review of lithium-ion batteries modeling, and state of
+health and remaining useful lifetime prediction,”IEEE Access, vol. 10,
+pp. 119 040–119 070, 2022.
+[21] Y . Wan, D. Gebbran, R. K. Subroto, and T. Dragi ˇcevi´c, “Optimal day-
+ahead scheduling of fast ev charging station with multi-stage battery
+degradation model,”IEEE Transactions on Energy Conversion, vol. 39,
+no. 2, pp. 872–883, 2024.
+[22] S.-F. Cheng and T. D. Nguyen, “Taxisim: A multiagent simulation
+platform for evaluating taxi fleet operations,” in2011 IEEE/WIC/ACM
+International Conferences on Web Intelligence and Intelligent Agent
+Technology, vol. 2, 2011, pp. 14–21.
+[23] J. Bischoff and M. Maciejewski, “Agent-based simulation of electric
+taxicab fleets,”Transportation Research Procedia, vol. 4, pp. 191–
+198, 2014, sustainable Mobility in Metropolitan Regions. mobil.TUM
+2014. International Scientific Conference on Mobility and Transport.
+Conference Proceedings.
+[24] E. Cording and J. Thakur, “Fleetrl: Realistic reinforcement learning
+environments for commercial vehicle fleets,”SoftwareX, vol. 26, p.
+101671, 2024.
+[25] “Tlc trip record data,” NYC Taxi & Limousinge Com-
+mission, New York, NY , Aug. 2025. [Online]. Available:
+https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page
+[26] “Taxi trips (2013-2023),” City of Chicago, Chicago, IL, Jun. 2024.
+[Online]. Available: https://data.cityofchicago.org/Transportation/Taxi-
+Trips-2013-2023-/
+[27] X. Liu, Z. Hu, X. Wang, and M. Xie, “Capacity degradation assess-
+ment of lithium-ion battery considering coupling effects of calendar
+and cycling aging,”IEEE Transactions on Automation Science and
+Engineering, vol. 21, no. 3, pp. 3052–3064, 2024.
+[28] Y .-C. Chen, “A tutorial on kernel density estimation and recent ad-
+vances,”Biostatistics & Epidemiology, vol. 1, no. 1, pp. 161–187, 2017.
+[29] E. D. Miller-Hooks and H. S. Mahmassani, “Least expected time paths
+in stochastic, time-varying transportation networks,”Transportation Sci-
+ence, vol. 34, no. 2, pp. 198–215, 2000.
+[30] X. Gao, A. J. Singh, G. Royyuru, M. Yuhas, and A. Easwaran, “Crllk:
+Constrained reinforcement learning for lane keeping in autonomous
+driving,” inProceedings of the 24th International Conference on Au-
+tonomous Agents and Multiagent Systems, ser. AAMAS ’25. Richland,
+SC: International Foundation for Autonomous Agents and Multiagent
+Systems, 2025, p. 3026–3028.
+[31] X. Wang, S. Wang, X. Liang, D. Zhao, J. Huang, X. Xu, B. Dai, and
+Q. Miao, “Deep reinforcement learning: A survey,”IEEE Transactions
+on Neural Networks and Learning Systems, vol. 35, no. 4, pp. 5064–
+5078, 2024.
+[32] A. Raffin, A. Hill, A. Gleave, A. Kanervisto, M. Ernestus, and N. Dor-
+mann, “Stable-baselines3: Reliable reinforcement learning implementa-
+tions,”Journal of Machine Learning Research, vol. 22, no. 268, pp. 1–8,
+2021.
+[33] “All new e6,” BYD, Singapore, Nov. 2021. [On-
+line]. Available: https://sg.byd.com/wp-content/uploads/2021/11/BYD-
+e6-Spec-Sheet-Sime-Darby-2th-Nov-2021.pdf
+
