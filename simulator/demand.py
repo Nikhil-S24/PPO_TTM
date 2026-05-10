@@ -55,16 +55,18 @@ class ReplayDemand(Demand):
         self.loop = loop
 
     def seek(self, t: datetime.datetime) -> None:
-        """Set demand to time t."""
+        """Set demand to time t (iterative, no recursion)."""
         if self.t > t:
             self.csvfile.seek(0)
-            next(self.reader)
-            self.t = self.t_min
-            self.seek(t)
-            return
-        while self.t < t:
+            next(self.reader)  # skip header
             self.last = next(self.reader)
             self.t = datetime.datetime.strptime(self.last["pickup_time"], self.datefmt)
+        while self.t < t:
+            try:
+                self.last = next(self.reader)
+                self.t = datetime.datetime.strptime(self.last["pickup_time"], self.datefmt)
+            except StopIteration:
+                break
 
     def tick(self, dt: datetime.timedelta, conditions: Dict = None) -> Set:
         """Get new jobs released on interval [t, t + dt).

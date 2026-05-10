@@ -12,6 +12,7 @@ from scheduler.policies import (
     EightyTwentyPolicy,
     TTMEnhancedPolicy,
     DnnPolicy,
+    PPOWithTTMPolicy,
 )
 
 
@@ -102,8 +103,13 @@ if __name__ == "__main__":
                 raise ValueError("--weights required for DNN policy")
             policy = DnnPolicy(args.weights)
 
+        elif args.policy.lower() == "ppottm":
+            if args.weights is None:
+                raise ValueError("--weights required for PPOTTM policy")
+            policy = PPOWithTTMPolicy(args.weights)
+
         else:
-            raise Exception("Choose a supported policy!")
+            raise Exception("Choose a supported policy: EIGHTYTWENTY, TTM, DNN, PPOTTM")
 
         environment = TaxiFleetSimulator(config)
         observation, info = environment.reset()

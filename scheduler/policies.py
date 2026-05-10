@@ -56,9 +56,10 @@ class EightyTwentyPolicy(SchedulePolicy):
 
     def schedule(self, observation: numpy.array, info: Dict) -> numpy.array:
         fleet_size = len(info["fleet"])
+        obs = numpy.array(observation).reshape((fleet_size, 2))
         action = numpy.zeros((fleet_size, 2))
         for v in range(fleet_size):
-            if observation[v, 1] < 0.2:
+            if obs[v, 1] < 0.2:
                 action[v, 0] = 72.1
                 action[v, 1] = 72.1
         return action
@@ -153,6 +154,92 @@ class DnnPolicy(SchedulePolicy):
         # Scale action[1] to charger power range (0 → max kW)
         action[:, 0] = np.clip(action[:, 0], 0.0, 1.0)
         action[:, 1] = action[:, 1] * 10.0  # match reference repo scaling
+
+        return action
+
+
+# ------------------------------------------------------------------
+# PPO + TTM Policy (our contribution)
+# Uses PPO for base decisions, TTM forecast for planning adjustments
+# ------------------------------------------------------------------
+class PPOWithTTMPolicy(SchedulePolicy):
+    """PPO + TTM policy: uses ground truth for PPO inference, then
+    adjusts actions based on TTM-predicted future SoH.
+
+    Architecture (per author feedback):
+        1. PPO sees ground truth s_t = [SoH, SoC] → outputs base action
+        2. TTM provides ŝ_{t+1} (predicted future SoH) via info dict
+        3. This policy adjusts the PPO action based on predicted degradation:
+           - If TTM predicts SoH crossing a stage boundary → charge gently
+           - If TTM predicts rapid decline → trigger proactive charging
+    """
+
+    # Multi-stage thresholds from the paper (Wan et al.)
+    STAGE_1_THRESHOLD = 0.933  # Stage 1 → Stage 2
+    STAGE_2_THRESHOLD = 0.866  # Stage 2 → Stage 3
+
+    def __init__(self, weights: str) -> None:
+        super().__init__()
+        self.model = stable_baselines3.PPO.load(weights)
+
+    def schedule(self, observation, info):
+        # Step 1: PPO base action (using ground truth observation)
+        action, _ = self.model.predict(observation, deterministic=True)
+
+        fleet_size = len(info["fleet"])
+        action = np.array(action).reshape((fleet_size, 2))
+        action = np.abs(action)
+        action[:, 0] = np.clip(action[:, 0], 0.0, 1.0)
+        action[:, 1] = action[:, 1] * 10.0
+
+        # Step 2: Get TTM predictions from info
+        predicted_soh = info.get("predicted_soh", {})
+        obs = np.array(observation).reshape((fleet_size, 2))
+
+        for v in range(fleet_size):
+            current_soh = obs[v, 0]
+            current_soc = obs[v, 1]
+
+            # Get TTM's predicted future SoH for this vehicle
+            pred = predicted_soh.get(v)
+            if pred is None:
+                continue
+
+            if isinstance(pred, np.ndarray):
+                pred_mean = float(np.mean(pred))
+                pred_min = float(np.min(pred))
+            else:
+                pred_mean = float(pred)
+                pred_min = float(pred)
+
+            # ---- TTM-informed planning adjustments ----
+            # KEY PRINCIPLE: TTM only adjusts charge RATE (action[1])
+            # for vehicles that are ALREADY charging (action[0] > 0.5).
+            # TTM should NEVER override PPO's dispatch decision (action[0]).
+
+            is_charging = action[v, 0] > 0.5
+
+            # A) Predict crossing into a more aggressive degradation stage
+            #    → reduce charge rate to slow aging
+            if is_charging:
+                crossing_stage = False
+                if current_soh > self.STAGE_1_THRESHOLD and pred_mean <= self.STAGE_1_THRESHOLD:
+                    crossing_stage = True
+                elif current_soh > self.STAGE_2_THRESHOLD and pred_mean <= self.STAGE_2_THRESHOLD:
+                    crossing_stage = True
+
+                if crossing_stage:
+                    # Gentle charging: reduce power to slow degradation
+                    action[v, 1] = min(action[v, 1], 3.0)
+
+                # B) TTM predicts rapid degradation → charge more gently
+                degradation_rate = current_soh - pred_mean
+                if degradation_rate > 0.005:
+                    action[v, 1] = min(action[v, 1], 5.0)
+
+                # C) SoH predicted to fall very low → use gentlest charge
+                if pred_min < self.STAGE_2_THRESHOLD:
+                    action[v, 1] = min(action[v, 1], 3.0)
 
         return action
 

@@ -1,102 +1,89 @@
-from __future__ import annotations
+"""Plot State of Health (SoH) degradation across 3 strategies."""
 
-import math
-from pathlib import Path
-
-import matplotlib.pyplot as plt
+import csv
 import numpy as np
-import pandas as pd
+import matplotlib.pyplot as plt
+import os
 
 
-def load_soh_series(csv_path: str) -> np.ndarray:
-    df = pd.read_csv(csv_path)
-    soh_cols = [col for col in df.columns if col.startswith("soh_")]
-    if not soh_cols:
-        raise ValueError(f"No soh_* columns found in {csv_path}")
-    soh = df[soh_cols].to_numpy(dtype=float)
-    return soh
+def load_soh(filename, fleet_size=50):
+    """Load SoH data from CSV. Returns median, 25th, and 75th percentile over time."""
+    with open(filename, 'r') as csvfile:
+        reader = csv.DictReader(csvfile)
+        fields = reader.fieldnames
+
+        # Detect column naming: 'soh0' (new) or 'soh_0' (old)
+        if "soh0" in fields:
+            prefix = "soh"
+        elif "soh_0" in fields:
+            prefix = "soh_"
+        else:
+            raise ValueError(f"CSV {filename} has no SoH columns")
+
+        medians = []
+        p25 = []
+        p75 = []
+
+        for idx, datum in enumerate(reader):
+            if idx % 24 == 0:  # sample daily
+                soh_values = []
+                for v in range(fleet_size):
+                    soh_values.append(float(datum[f"{prefix}{v}"]))
+                soh = np.array(soh_values)
+                medians.append(np.percentile(soh, 50))
+                p25.append(np.percentile(soh, 25))
+                p75.append(np.percentile(soh, 75))
+
+    t = np.arange(len(medians)) / 365.0  # days → years
+    return t, np.array(medians), np.array(p25), np.array(p75)
 
 
-def weekly_statistics(soh: np.ndarray, dt_seconds: int = 3600) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    steps_per_week = int((7 * 24 * 3600) / dt_seconds)
-    if steps_per_week <= 0:
-        raise ValueError("dt_seconds must be positive")
-
-    sample_indices = list(range(0, len(soh), steps_per_week))
-    medians = []
-    q1 = []
-    q3 = []
-    years = []
-
-    for idx in sample_indices:
-        current = soh[idx]
-        medians.append(float(np.percentile(current, 50)))
-        q1.append(float(np.percentile(current, 25)))
-        q3.append(float(np.percentile(current, 75)))
-        years.append((idx * dt_seconds) / (365.0 * 24 * 3600))
-
-    return np.array(years), np.array(medians), np.array(q1), np.array(q3)
-
-
-def limit_to_years(soh: np.ndarray, dt_seconds: int = 3600, max_years: float = 5.0) -> np.ndarray:
-    max_steps = int((max_years * 365.0 * 24 * 3600) / dt_seconds)
-    if max_steps <= 0:
-        raise ValueError("max_years must be positive")
-    return soh[:max_steps]
-
-
-def plot_soh_three(
-    baseline_csv: str,
-    ppo_csv: str,
-    ppo_ttm_csv: str,
-    output_png: str = "soh_three_strategies.png",
-) -> None:
-    series = {
-        "Baseline": load_soh_series(baseline_csv),
-        "PPO-RL": load_soh_series(ppo_csv),
-        "PPO+TTM": load_soh_series(ppo_ttm_csv),
+def main():
+    files = {
+        "Baseline (80-20)": "baseline_5y.csv",
+        "PPO-RL": "ppo_5y.csv",
+        "PPO+TTM (Our Work)": "ppottm_5y.csv",
     }
 
     colors = {
-        "Baseline": "#1f77b4",
+        "Baseline (80-20)": "#1f77b4",
         "PPO-RL": "#ff7f0e",
-        "PPO+TTM": "#2ca02c",
+        "PPO+TTM (Our Work)": "#2ca02c",
     }
 
-    fig, ax = plt.subplots(figsize=(8.4, 4.8))
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    found_any = False
 
-    for label, soh in series.items():
-        soh = limit_to_years(soh, dt_seconds=3600, max_years=5.0)
-        years, median, lower, upper = weekly_statistics(soh)
-        ax.fill_between(years, lower, upper, color=colors[label], alpha=0.25, linewidth=0)
-        ax.plot(years, median, label=label, color=colors[label], linewidth=2)
+    for label, filename in files.items():
+        if not os.path.exists(filename):
+            print(f"  Skipping {label} ({filename} not found)")
+            continue
+
+        found_any = True
+        print(f"Plotting {label} from {filename}...")
+        t, median, p25, p75 = load_soh(filename)
+
+        ax.fill_between(t, p25, p75, alpha=0.2, color=colors[label])
+        ax.plot(t, median, label=label, linewidth=2, color=colors[label])
+
+        print(f"  -> Final median SoH: {median[-1]:.4f}")
+
+    if not found_any:
+        print("No CSV files found! Run the simulations first.")
+        return
 
     ax.set_xlabel("Years")
     ax.set_ylabel(r"State of Health $\bar{Q}_v(t)/\bar{Q}_v(0)$")
-    ax.set_title("SoH across Years for Simulated Fleets")
-    ax.set_xlim(0, 5)
-    ax.set_ylim(0.68, 1.01)
-    ax.grid(alpha=0.3)
+    ax.set_title("Battery Degradation Comparison")
+    ax.set_ylim(0.70, 1.0)
+    ax.grid(True, linestyle='--', alpha=0.3)
     ax.legend(loc="upper right")
-    fig.tight_layout()
-    fig.savefig(output_png, dpi=220)
 
-    print(f"saved {output_png}")
-    for label, soh in series.items():
-        soh = limit_to_years(soh, dt_seconds=3600, max_years=5.0)
-        print(
-            label,
-            "median_final=", float(np.percentile(soh[-1], 50)),
-            "iqr_final=", (
-                float(np.percentile(soh[-1], 75)),
-                float(np.percentile(soh[-1], 25)),
-            ),
-        )
+    plt.tight_layout()
+    plt.savefig("soh_comparison_plot.png", dpi=200)
+    print("\nSaved plot to soh_comparison_plot.png")
+    plt.show()
 
 
 if __name__ == "__main__":
-    plot_soh_three(
-        baseline_csv="output_baseline_fix1.csv",
-        ppo_csv="output_ppo_fix1.csv",
-        ppo_ttm_csv="output_ppo_ttm_fix1.csv",
-    )
+    main()

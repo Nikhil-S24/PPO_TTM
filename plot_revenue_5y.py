@@ -1,4 +1,4 @@
-"""Plot cumulative revenue comparison — handles both old and new CSV formats."""
+"""Plot 5-Year Cumulative Revenue Comparison across 3 strategies."""
 
 import csv
 import numpy as np
@@ -7,78 +7,63 @@ import os
 
 
 def load_cumulative_revenue(filename):
-    """Load revenue from CSV. Handles both 'profit' (new) and 'total_revenue' (old) headers."""
+    """Load revenue from CSV. Handles both 'profit' and 'total_revenue' headers."""
     with open(filename, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
         fields = reader.fieldnames
 
-        # Detect format
         if "profit" in fields:
-            # New format: per-step profit, needs cumulative sum
             revenue = []
             r = 0
             for idx, datum in enumerate(reader):
                 r += float(datum["profit"])
-                if idx % 24 == 0:
+                if idx % (24 * 7) == 0:  # sample weekly
                     revenue.append(r)
         elif "total_revenue" in fields:
-            # Old format: already cumulative
             revenue = []
             for idx, datum in enumerate(reader):
-                if idx % 24 == 0:
+                if idx % (24 * 7) == 0:  # sample weekly
                     revenue.append(float(datum["total_revenue"]))
         else:
             raise ValueError(f"CSV {filename} has no 'profit' or 'total_revenue' column")
 
-    t = np.arange(len(revenue))  # days
+    t = np.linspace(0, len(revenue) / 52.0, len(revenue))  # weeks → years
     return t, np.array(revenue)
 
 
 def main():
     files = {
-        "Baseline (80-20)": ["baseline_5y.csv"],
-        "PPO-RL": ["ppottm_5y.csv"],
-        "PPO+TTM": ["ppo_5y.csv"],
+        "Baseline (80-20)": "baseline_5y.csv",
+        "PPO-RL": "ppo_5y.csv",
+        "PPO+TTM (Our Work)": "ppottm_5y.csv",
     }
 
     colors = {
-        "Baseline (80-20)": "#2ca02c" ,
-        "PPO-RL": "#1f77b4",
-        "PPO+TTM": "#ff7f0e" ,
+        "Baseline (80-20)": "#1f77b4",
+        "PPO-RL": "#ff7f0e",
+        "PPO+TTM (Our Work)": "#2ca02c",
     }
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    found_any = False
 
-    for label, candidates in files.items():
-        filename = None
-        for f in candidates:
-            if os.path.exists(f):
-                filename = f
-                break
-
-        if filename:
-            found_any = True
+    for label, filename in files.items():
+        if os.path.exists(filename):
             print(f"Plotting {label} from {filename}...")
             t, revenue = load_cumulative_revenue(filename)
             ax.plot(t, revenue, label=label, linewidth=2, color=colors[label])
-            print(f"  -> Data points: {len(t)}, Final Revenue: ${revenue[-1]:,.2f}")
+            print(f"  -> Final Revenue: ${revenue[-1]:,.2f}")
         else:
-            print(f"  Skipping {label} (no file found)")
+            print(f"  Skipping {label} ({filename} not found)")
 
-    if not found_any:
-        print("No CSV files found! Run the simulations first.")
-        return
-
-    ax.set_xlabel("Days")
+    ax.set_xlabel("Years")
     ax.set_ylabel("Cumulative Revenue ($)")
     ax.set_title("5-Year Revenue Comparison")
     ax.grid(True, linestyle='--', alpha=0.3)
     ax.legend(loc="upper left")
 
     plt.tight_layout()
-    plt.savefig("revenue_5y_comparison.png", dpi=200)
-    print("\nSaved plot to revenue_5y_comparison.png")
+    plt.savefig("revenue_5y_plot.png", dpi=200)
+    print("\nSaved plot to revenue_5y_plot.png")
     plt.show()
 
 

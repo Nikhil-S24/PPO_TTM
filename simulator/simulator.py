@@ -48,33 +48,21 @@ class TaxiFleetSimulator(gym.Env):
         self.ttm_update_interval = 50
 
     # ==================================================
-    # OBSERVATION (Future-Aware Fusion)
+    # OBSERVATION — always ground truth (per author feedback)
     # ==================================================
     def _get_obs(self) -> np.ndarray:
-        """Get an observation from the environment."""
+        """Get an observation from the environment.
+
+        Returns ground truth [SoH, SoC] for each vehicle.
+        TTM predictions are passed separately via info['predicted_soh']
+        so the policy can use them for planning without corrupting
+        the ground truth state.
+        """
         obs = np.zeros((len(self.fleet), 2))
         for idx, v in enumerate(self.fleet):
-            current_soh = v.battery.actual_capacity / v.battery.initial_capacity
-
-            predicted_soh = self.predicted_soh.get(v.vid)
-
-            if predicted_soh is None:
-                pred_scalar = current_soh
-            elif isinstance(predicted_soh, np.ndarray):
-                pred_scalar = np.mean(predicted_soh)
-            else:
-                pred_scalar = predicted_soh
-
-            # When TTM is active, fuse current + predicted SoH
-            if self.use_ttm:
-                avg_soh = 0.5 * (current_soh + pred_scalar)
-            else:
-                avg_soh = current_soh
-
-            obs[idx, 0] = avg_soh
+            obs[idx, 0] = v.battery.actual_capacity / v.battery.initial_capacity
             obs[idx, 1] = v.battery.soc
-
-        return obs
+        return obs.flatten()
 
     # ==================================================
     # Helper methods
@@ -163,7 +151,7 @@ class TaxiFleetSimulator(gym.Env):
             )
 
         self.observation_space = gym.spaces.Box(
-            0, 1, shape=(len(self.fleet), 2)
+            0, 1, shape=(len(self.fleet) * 2,)
         )
         self.action_space = gym.spaces.Box(
             0, 1, shape=(len(self.fleet), 2)
@@ -229,7 +217,17 @@ class TaxiFleetSimulator(gym.Env):
         # -------------------------------
         # Get new arrivals (ReplayDemand)
         # -------------------------------
-        self.arrived = self.arrived | self.demand.tick(self.dt)
+        try:
+            new_arrivals = self.demand.tick(self.dt)
+            self.arrived = self.arrived | new_arrivals
+        except StopIteration:
+            # Demand CSV exhausted — loop back to start
+            self.demand.seek(self.demand.t_min)
+            try:
+                new_arrivals = self.demand.tick(self.dt)
+                self.arrived = self.arrived | new_arrivals
+            except StopIteration:
+                pass  # truly no more data
 
         # -------------------------------
         # Update jobs in progress
@@ -316,6 +314,10 @@ class TaxiFleetSimulator(gym.Env):
         info["failed"] = self.failed
         info["charging_network"] = [s.to_dict() for s in self.charging_network]
         info["fleet"] = [v.to_dict() for v in self.fleet]
+
+        # Pass TTM predictions via info for policy-level planning
+        # (ground truth stays in obs, predictions stay here)
+        info["predicted_soh"] = dict(self.predicted_soh)
 
         # ==================================================
         # Reward (for PPO training)
