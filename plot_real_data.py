@@ -36,9 +36,9 @@ def load_cumulative_revenue(filename):
 
 def main():
     files = {
-        "Baseline (80-20)": ["test_ppo_ttm.csv"],
-        "PPO-RL": ["test_baseline.csv"],
-        "PPO+TTM": ["test_ppo.csv"],
+        "Baseline (80-20)": ["test_baseline.csv"],
+        "PPO-RL": ["test_ppo.csv"],
+        "PPO+TTM": ["test_ppo_ttm.csv"],
     }
 
     colors = {
