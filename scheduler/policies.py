@@ -59,9 +59,29 @@ class EightyTwentyPolicy(SchedulePolicy):
         obs = numpy.array(observation).reshape((fleet_size, 2))
         action = numpy.zeros((fleet_size, 2))
         for v in range(fleet_size):
-            if obs[v, 1] < 0.2:
-                action[v, 0] = 72.1
-                action[v, 1] = 72.1
+            soc = obs[v, 1]
+            status = info["fleet"][v]["status"]
+
+            if status in ("TOCHARGE",):
+                # Vehicle is traveling to charger — keep the charge command
+                # active so it isn't pulled away for a job
+                action[v, 0] = 1.0
+                action[v, 1] = 7.0
+            elif status == "CHARGING":
+                # Keep charging until 80% SoC (the "80" in 80-20)
+                if soc < 0.8:
+                    action[v, 0] = 1.0
+                    action[v, 1] = 7.0
+                # else: action stays 0 → vehicle leaves charger, dispatched
+            elif status in ("ONJOB", "TOPICKUP", "RECOVERY"):
+                # Vehicle is busy — don't interfere
+                pass
+            else:
+                # IDLE vehicle: send to charge if SoC < 20%
+                if soc < 0.2:
+                    action[v, 0] = 1.0
+                    action[v, 1] = 7.0
+                # else: action stays 0 → available for job dispatch
         return action
 
 

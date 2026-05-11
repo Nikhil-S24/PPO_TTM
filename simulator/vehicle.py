@@ -84,10 +84,16 @@ class Vehicle:
     # ------------------------------------------------------
 
     def charge(self, charger, preferred_rate):
+        self.preferred_rate = preferred_rate
+
+        # If already en route to the same charger, just update the rate
+        # without resetting the travel countdown.
+        if self.status == VehicleStatus.TOCHARGE and self.charger == charger:
+            return
+
         self.charger = charger
         self.destination = charger.location
         self.time_remaining = self.location.to(self.destination)[1]
-        self.preferred_rate = preferred_rate
 
         if self.status != VehicleStatus.CHARGING:
             self.status = VehicleStatus.TOCHARGE

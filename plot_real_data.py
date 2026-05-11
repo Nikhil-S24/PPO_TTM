@@ -36,9 +36,9 @@ def load_cumulative_revenue(filename):
 
 def main():
     files = {
-        "Baseline (80-20)": ["baseline_5y.csv"],
-        "PPO-RL": ["ppottm_5y.csv"],
-        "PPO+TTM": ["ppo_5y.csv"],
+        "Baseline (80-20)": ["test_ppo_ttm.csv"],
+        "PPO-RL": ["test_baseline.csv"],
+        "PPO+TTM": ["test_ppo.csv"],
     }
 
     colors = {
@@ -72,13 +72,13 @@ def main():
 
     ax.set_xlabel("Days")
     ax.set_ylabel("Cumulative Revenue ($)")
-    ax.set_title("5-Year Revenue Comparison")
+    ax.set_title("Revenue Comparison")
     ax.grid(True, linestyle='--', alpha=0.3)
     ax.legend(loc="upper left")
 
     plt.tight_layout()
-    plt.savefig("revenue_5y_comparison.png", dpi=200)
-    print("\nSaved plot to revenue_5y_comparison.png")
+    plt.savefig("revenue_1m_comparison.png", dpi=200)
+    print("\nSaved plot to revenue_1m_comparison.png")
     plt.show()
 
 
